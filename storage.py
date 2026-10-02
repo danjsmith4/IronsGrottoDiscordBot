@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -14,6 +15,33 @@ from config import EVENTBAN_DB_PATH, LEADERBOARD_DB_PATH, WAVE_BOSSES
 
 logger = logging.getLogger(__name__)
 TIME_PART = re.compile(r'\d+(?:\.\d+)?')
+
+
+class BumpStore:
+    """A single persistent reminder, separate from existing bot databases."""
+
+    def __init__(self, path='bump_reminder.sqlite3'):
+        self.path = path
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS reminder (id INTEGER PRIMARY KEY, next_due INTEGER NOT NULL, message_id INTEGER, last_user INTEGER, paused INTEGER NOT NULL)')
+            conn.execute('INSERT OR IGNORE INTO reminder VALUES (1, 0, NULL, NULL, 0)')
+
+    def read(self):
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.row_factory = sqlite3.Row
+            return dict(conn.execute('SELECT * FROM reminder WHERE id=1').fetchone())
+
+    def sent(self, message_id):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('UPDATE reminder SET message_id=? WHERE id=1', (message_id,))
+
+    def complete(self, user_id, next_due):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('UPDATE reminder SET next_due=?, last_user=?, message_id=NULL WHERE id=1', (next_due, user_id))
+
+    def pause(self, paused):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('UPDATE reminder SET paused=? WHERE id=1', (int(paused),))
 
 def db():
     return sqlite3.connect(EVENTBAN_DB_PATH)

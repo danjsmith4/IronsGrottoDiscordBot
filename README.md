@@ -35,6 +35,21 @@ Tests use temporary databases and mocked Discord connections.
 
 ## Deployment
 
+### Forum Bump Reminders
+
+The bot reminds Staff in channel `697877519730213010` to manually bump the
+configured forum post. On first startup it sends a reminder; **Bump Done** records
+the staff member and schedules the next reminder four hours later (checked every
+minute). There are no repeated pings while a reminder is awaiting completion.
+The button remains usable after restarts. Only role `829386451624001539` can use
+it, and controls must be used in the reminder channel.
+
+`/bump status`, `/bump done`, `/bump pause`, and `/bump resume` manage the timer.
+Use `/bump done` if a reminder was deleted or staff bumped ahead of schedule.
+State is stored in `bump_reminder.sqlite3` in the data folder, included in existing
+data backups. The bot needs View Channel, Send Messages, and permission to mention
+the Staff role (or the role must be mentionable). It does not bump the post itself.
+
 See [DEPLOYMENT.md](DEPLOYMENT.md) for Unraid setup. A push to `main` builds and
 tests the container. Publishing requires approval of the GitHub `production`
 environment. Unraid pulls the approved image, backs up data, and restarts the bot.

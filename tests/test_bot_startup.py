@@ -18,6 +18,7 @@ class BotStartupTests(unittest.IsolatedAsyncioTestCase):
         self.directory = tempfile.TemporaryDirectory()
         os.chdir(self.directory.name)
         self.bot = commands.Bot(command_prefix='.', intents=discord.Intents.none())
+        await self.bot.__aenter__()
         self.cog = Community(self.bot)
         await self.bot.add_cog(self.cog)
         await self.bot.add_cog(Moderation(self.bot))

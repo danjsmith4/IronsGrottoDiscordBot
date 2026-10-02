@@ -157,6 +157,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                     bot.tree.sync.assert_awaited_once()
                     self.assertIsNotNone(bot.tree.get_command('lb'))
                     self.assertIsNotNone(bot.tree.get_command('apply'))
+                    self.assertIsNotNone(bot.tree.get_command('bump'))
                     self.assertEqual(set(bot.cogs), {'Community', 'Moderation', 'Leaderboards'})
                     self.assertEqual({command.name for command in bot.commands}, {
                         'diary', 'gim', 'collectionlog', 'help', 'leaderboard',

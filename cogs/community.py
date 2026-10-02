@@ -1,16 +1,33 @@
 """Welcome messages, applications, and community information commands."""
 import logging
 import random
+import asyncio
+import time
+from typing import Literal
 
 import discord
 from discord import app_commands, Embed
-from discord.ext import commands
+from discord.ext import commands, tasks
+from storage import BumpStore
+from config import BUMP_CHANNEL_ID, BUMP_POST_URL, BUMP_INTERVAL_SECONDS
 
 from config import (channel_id, INVITE_LINK, TEMPLE_LINK, RANK_CALCULATOR_LINK,
                     STAFF_ROLE_ID, STAFF_ROLES, RANK_APPLICATION_CHANNEL_ID,
                     DIARY_CHANNEL_ID, BINGO_DROPS_CHANNEL_ID)
 
 logger = logging.getLogger(__name__)
+
+
+class BumpView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.add_item(discord.ui.Button(label='Open Forum Post', url=BUMP_POST_URL))
+
+    @discord.ui.button(label='Bump Done', style=discord.ButtonStyle.success,
+                       custom_id='grotto:bump:done:v1')
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.complete_bump(interaction, from_button=True)
 
 async def send_welcome_message(member, bot):
     welcome_id = channel_id('WELCOME_CHANNEL_ID')
@@ -46,6 +63,102 @@ class Community(commands.Cog):
         self.image_url_1 = 'https://i.imgur.com/pgg0TUv.png'
         self.image_url_2 = 'https://i.imgur.com/GEJw9cA.png'
         self.image_url_3 = 'https://i.imgur.com/HAPQdyX.png'
+        self.bump_store = BumpStore()
+        self.bump_lock = asyncio.Lock()
+        self.bump_view = BumpView(self)
+
+    async def cog_load(self):
+        self.bot.add_view(self.bump_view)
+        self.bump_reminders.start()
+
+    async def cog_unload(self):
+        self.bump_reminders.cancel()
+        self.bump_view.stop()
+
+    @tasks.loop(seconds=60)
+    async def bump_reminders(self):
+        try:
+            await self.send_bump_if_due()
+        except Exception:
+            logger.exception('Could not send forum bump reminder; will retry')
+
+    @bump_reminders.before_loop
+    async def before_bump_reminders(self):
+        await self.bot.wait_until_ready()
+
+    async def send_bump_if_due(self):
+        async with self.bump_lock:
+            state = self.bump_store.read()
+            if state['paused'] or state['message_id'] or time.time() < state['next_due']:
+                return
+            channel = self.bot.get_channel(BUMP_CHANNEL_ID)
+            if channel is None:
+                channel = await self.bot.fetch_channel(BUMP_CHANNEL_ID)
+            message = await channel.send(
+                f'<@&{STAFF_ROLE_ID}> Time to bump our forum post! '
+                'Please bump it manually, then press **Bump Done**.',
+                view=self.bump_view,
+                allowed_mentions=discord.AllowedMentions(
+                    roles=[discord.Object(id=STAFF_ROLE_ID)], users=False, everyone=False),
+            )
+            self.bump_store.sent(message.id)
+
+    async def bump_authorized(self, interaction):
+        allowed = interaction.guild_id is not None and interaction.channel_id == BUMP_CHANNEL_ID
+        allowed = allowed and any(role.id == STAFF_ROLE_ID for role in getattr(interaction.user, 'roles', []))
+        if not allowed:
+            await interaction.response.send_message(
+                f'Only Staff can manage bumps in <#{BUMP_CHANNEL_ID}>.', ephemeral=True)
+        return allowed
+
+    async def complete_bump(self, interaction, *, from_button=False):
+        if not await self.bump_authorized(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        async with self.bump_lock:
+            state = self.bump_store.read()
+            if from_button and interaction.message.id != state['message_id']:
+                await interaction.followup.send('This reminder has already been handled.', ephemeral=True)
+                return
+            due = int(time.time()) + BUMP_INTERVAL_SECONDS
+            self.bump_store.complete(interaction.user.id, due)
+            if state['message_id']:
+                try:
+                    message = interaction.channel.get_partial_message(state['message_id'])
+                    await message.edit(
+                        content=f'Bump recorded by <@{interaction.user.id}>. Next reminder <t:{due}:R>.',
+                        view=None, allowed_mentions=discord.AllowedMentions.none())
+                except discord.HTTPException:
+                    logger.warning('Could not update completed bump reminder', exc_info=True)
+            suffix = ' Reminders are still paused.' if state['paused'] else ''
+            await interaction.followup.send(f'Bump recorded. Next reminder <t:{due}:R>.{suffix}', ephemeral=True)
+
+    @app_commands.command(name='bump', description='Manage the four-hour forum bump reminder')
+    @app_commands.describe(action='Check the timer, record a manual bump, or pause/resume reminders')
+    async def bump(self, interaction: discord.Interaction,
+                   action: Literal['status', 'done', 'pause', 'resume'] = 'status'):
+        if action == 'done':
+            await self.complete_bump(interaction)
+            return
+        if not await self.bump_authorized(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        async with self.bump_lock:
+            if action in ('pause', 'resume'):
+                self.bump_store.pause(action == 'pause')
+            state = self.bump_store.read()
+        if state['paused']:
+            status = 'Reminders are paused.'
+        elif state['message_id']:
+            status = 'Waiting for staff to bump the post and press Bump Done.'
+        elif state['next_due'] <= time.time():
+            status = 'A reminder is due and will be sent within one minute.'
+        else:
+            status = f"Next reminder <t:{state['next_due']}:R>."
+        if state['last_user']:
+            status += f" Last bump recorded by <@{state['last_user']}>."
+        await interaction.followup.send(status, ephemeral=True,
+                                        allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
