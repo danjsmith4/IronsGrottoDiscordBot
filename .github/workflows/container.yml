@@ -1,0 +1,56 @@
+name: Check and approve bot update
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bot-production
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Python 3.12 container
+        run: docker build -t bot-check .
+      - name: Check Python syntax without starting the bot
+        run: docker run --rm --entrypoint python bot-check -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8-sig'), filename=str(p)) for p in pathlib.Path('/app').glob('*.py')]"
+      - name: Save the checked image
+        run: docker save bot-check -o bot-image.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-bot-image
+          path: bot-image.tar
+          retention-days: 7
+
+  publish:
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: checked-bot-image
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the approved image
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          docker load -i bot-image.tar
+          docker tag bot-check "ghcr.io/danjsmith4/ironsgrottodiscordbot:$COMMIT_SHA"
+          docker tag bot-check ghcr.io/danjsmith4/ironsgrottodiscordbot:approved
+          docker push "ghcr.io/danjsmith4/ironsgrottodiscordbot:$COMMIT_SHA"
+          docker push ghcr.io/danjsmith4/ironsgrottodiscordbot:approved

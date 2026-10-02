@@ -1,0 +1,24 @@
+services:
+  bot:
+    image: ghcr.io/danjsmith4/ironsgrottodiscordbot:approved
+    restart: unless-stopped
+    user: "99:100"
+    environment:
+      HOME: /data
+      FORCE_CLEAR: "0"
+    volumes:
+      - /mnt/user/appdata/irons-grotto-bot/data:/data
+      - /mnt/user/appdata/irons-grotto-bot/secrets/bot.env:/app/.env:ro
+      - /mnt/user/appdata/irons-grotto-bot/secrets/google-service-account.json:/run/secrets/google-service-account.json:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

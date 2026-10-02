@@ -1,0 +1,5 @@
+**
+!*.py
+!discord.png
+!requirements.txt
+!container-entrypoint.py
