@@ -32,7 +32,6 @@ bot = commands.Bot(command_prefix=".", intents=intents, case_insensitive=True)
 # ---- Import cog classes (no need to import the groups directly) ----
 #from invite import InviteFilter
 from bot_commands import BotCommands
-from rank_request import GoogleSheetResponder
 from imgur import ImgurOnly
 from leaderboardcommands import LeaderboardCommands
 from memberjoin import send_welcome_message
@@ -41,7 +40,6 @@ async def add_cogs():
     """Adds all cogs to the bot."""
     #await bot.add_cog(InviteFilter(bot))
     await bot.add_cog(BotCommands(bot))
-    await bot.add_cog(GoogleSheetResponder(bot))
     await bot.add_cog(ImgurOnly(bot))
     await bot.add_cog(LeaderboardCommands(bot))
     await bot.add_cog(Apply(bot))

@@ -1,5 +1,4 @@
 import os
-import re
 import random
 import sqlite3
 import datetime
@@ -8,8 +7,6 @@ from typing import Optional, List, Tuple
 import discord
 from discord.ext import commands
 from discord import app_commands
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
 
 # =========================
 # Event-ban config / DB
@@ -302,21 +299,9 @@ class BotCommands(commands.Cog):
         self.bot = bot
         self.invite_link = "https://discord.gg/HPuwhhXnD5"
         self.temple_link = "https://templeosrs.com/groups/overview.php?id=241"
-        self.ranksheet_link = "https://docs.google.com/spreadsheets/d/1IlcOiTEA9OM-eIvERsfS7JFtxxfbbbdtOFogiLWANm8/edit?usp=sharing"
         self.rank_calculator_app_link = "https://ironsgrotto.xyz"  # New link added
 
         self.staff_role_id = 829386451624001539
-
-        self.SERVICE_ACCOUNT_FILE = 'lively-folder-427321-q7-eecd6c0329ea.json'
-        self.SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-        self.SPREADSHEET_ID = '1zwYdTFH29sqGYAw0HDUDI6IfB-7kJz3W1MkEDq9b3fg'
-        self.EHB_RANGE = 'hof_overall!B37:C46'
-        self.EHP_RANGE = 'hof_overall!B22:C31'
-        self.LOG_RANGE = 'sheet41!K2:L11'
-
-        self.creds = service_account.Credentials.from_service_account_file(
-            self.SERVICE_ACCOUNT_FILE, scopes=self.SCOPES)
-        self.service = build('sheets', 'v4', credentials=self.creds)
 
         # Image URLs for the rankcalc command
         self.image_url_1 = "https://i.imgur.com/pgg0TUv.png"
@@ -569,16 +554,6 @@ class BotCommands(commands.Cog):
     async def temple(self, ctx):
         await ctx.send(f"Here is the link to the TempleOSRS page: {self.temple_link}")
 
-    @commands.command(name='ranksheet')
-    async def ranksheet(self, ctx):
-        instructions = (
-            "To rank up, please follow these steps:\n"
-            "1. Open the Google Sheet and Make a Copy, ensure this can be shared with others\n"
-            "2. Input your times and select the boss you are ranking for.\n"
-            "3. Your rank will be automatically updated!\n\n"
-            f"Here is the link to the rank sheet: {self.ranksheet_link}"
-        )
-        await ctx.send(instructions)
 
     @commands.command(name='submit')
     async def submit(self, ctx):
@@ -596,16 +571,10 @@ class BotCommands(commands.Cog):
         embed = discord.Embed(
             title="How to Apply / Request a Rank",
             description=(
-                "1. Open the Google sheet linked below and make a copy of the sheet. Please rename this sheet to your OSRS username. "
-                "Under the 'file' tab, please click on the following: share > share with others > anyone with the link.\n\n"
-                "2. Complete the spreadsheet by following the directions in the READ ME tab. You will need to do the following: Enter your username, "
-                "double-click and enter your clan join date, select all boxes that apply to your account, and enter #s where indicated. Your rank will auto-calculate "
-                "based on what you enter.\n\n"
-                "3. Under the 'Provide Screenshots Here' section, you will need to link your Collectionlog.net URL. You can do this by installing the collectionlog "
-                "plugin on Runelite and following the directions in the plugin. This plugin will be used to verify the information you enter on your application.\n\n"
-                "4. When your application is complete, just copy & paste a link to your sheet in the appropriate channel. A member of the leadership team will look "
-                "over your application and give you a rank in the clan. If you do not follow step 1 above, we will not be able to view your application.\n\n"
-                f"[Application link]({self.ranksheet_link})\n\n"
+                f"1. Open {self.rank_calculator_app_link} and log in with Discord.\n\n"
+                "2. Add your player and complete the rank calculator.\n\n"
+                "3. Save your progress and select Apply for promotion. "
+                "A member of the leadership team will review your application.\n\n"
                 "If you have any questions, comments, or concerns, please don't hesitate to ask 😄"
             ),
             color=discord.Color.blue()
@@ -641,130 +610,6 @@ class BotCommands(commands.Cog):
 
         chosen_user = random.choice(staff_members)
         await ctx.send(f"{chosen_user.mention}, you've been chosen to do this week's event.")
-
-    @commands.command(name='top_ehb')
-    async def top_ehb(self, ctx):
-        sheet = self.service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=self.SPREADSHEET_ID, range=self.EHB_RANGE).execute()
-        values = result.get('values', [])
-
-        if not values:
-            await ctx.send('No EHB data found.')
-        else:
-            response = "EHB:\n"
-            for rank, row in enumerate(values, start=1):
-                if len(row) == 2:
-                    username, ehb = row
-                    response += f"{rank}. {username} | {ehb}\n"
-                else:
-                    response += f"Rank {rank}: Invalid data\n"
-            await ctx.send(response)
-
-    @commands.command(name='top_ehp')
-    async def top_ehp(self, ctx):
-        sheet = self.service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=self.SPREADSHEET_ID, range=self.EHP_RANGE).execute()
-        values = result.get('values', [])
-
-        if not values:
-            await ctx.send('No EHP data found.')
-        else:
-            response = "EHP:\n"
-            for rank, row in enumerate(values, start=1):
-                if len(row) == 2:
-                    username, ehp = row
-                    response += f"{rank}. {username} | {ehp}\n"
-                else:
-                    response += f"Rank {rank}: Invalid data\n"
-            await ctx.send(response)
-
-    @commands.command(name='top_log')
-    async def top_log(self, ctx):
-        sheet = self.service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=self.SPREADSHEET_ID, range=self.LOG_RANGE).execute()
-        values = result.get('values', [])
-
-        if not values:
-            await ctx.send('No Log data found.')
-        else:
-            response = "Top Collection Logs:\n"
-            for rank, row in enumerate(values, start=1):
-                if len(row) == 2:
-                    username, log = row
-                    response += f"{rank}. {username} | {log}\n"
-                else:
-                    response += f"Rank {rank}: Invalid data\n"
-            await ctx.send(response)
-
-    @commands.command(name='sotw')
-    async def sotw(self, ctx, url: str):
-        digits = re.findall(r'\d{5}$', url)
-        if digits:
-            extracted_digits = digits[0]
-            values = [[extracted_digits]]
-            body = {'values': values}
-            try:
-                self.service.spreadsheets().values().update(
-                    spreadsheetId=self.SPREADSHEET_ID,
-                    range='Links!B10',
-                    valueInputOption='USER_ENTERED',
-                    body=body
-                ).execute()
-                await ctx.send(f'Extracted digits "{extracted_digits}" added to Links!B10.')
-            except Exception as e:
-                await ctx.send(f'An error occurred')
-
-    @commands.command(name='botw')
-    async def botw(self, ctx, url: str):
-        digits = re.findall(r'\d{5}$', url)
-        if digits:
-            extracted_digits = digits[0]
-            values = [[extracted_digits]]
-            body = {'values': values}
-            try:
-                self.service.spreadsheets().values().update(
-                    spreadsheetId=self.SPREADSHEET_ID,
-                    range='Links!B9',
-                    valueInputOption='USER_ENTERED',
-                    body=body
-                ).execute()
-                await ctx.send(f'Extracted digits "{extracted_digits}" added to Links!B9.')
-            except Exception as e:
-                await ctx.send(f'An error occurred: {e}')
-        else:
-            await ctx.send('Could not extract 5 digits from the URL.')
-
-    @commands.command(name='raidbotw')
-    async def raidbotw(self, ctx, url1: str, url2: str):
-        digits1 = re.findall(r'\d{5}$', url1)
-        digits2 = re.findall(r'\d{5}$', url2)
-
-        if digits1 and digits2:
-            extracted_digits1 = digits1[0]
-            extracted_digits2 = digits2[0]
-
-            try:
-                body1 = {'values': [[extracted_digits1]]}
-                self.service.spreadsheets().values().update(
-                    spreadsheetId=self.SPREADSHEET_ID,
-                    range='Links!B9',
-                    valueInputOption='USER_ENTERED',
-                    body=body1
-                ).execute()
-
-                body2 = {'values': [[extracted_digits2]]}
-                self.service.spreadsheets().values().update(
-                    spreadsheetId=self.SPREADSHEET_ID,
-                    range='Links!B11',
-                    valueInputOption='USER_ENTERED',
-                    body=body2
-                ).execute()
-
-                await ctx.send(f'Extracted digits "{extracted_digits1}" added to Links!B9 and "{extracted_digits2}" added to Links!B11.')
-            except Exception as e:
-                await ctx.send(f'An error occurred: {e}')
-        else:
-            await ctx.send('Could not extract 5 digits from both URLs.')
 
     @commands.command(name='rankcalc')
     async def rankcalc(self, ctx):
@@ -834,7 +679,7 @@ class BotCommands(commands.Cog):
                 "**What is the Grotto Diaries?**\n"
                 "Boss speed-running + Collection Log challenges from Easy to Grandmaster, with rewards.\n\n"
                 "**Rewards**\n"
-                "Speedrun tiers award up to 4 points; Collection Log tiers awarded via Ranksheet.\n\n"
+                "Speedrun tiers award up to 4 points; Collection Log tiers awarded via the rank calculator.\n\n"
                 "**Speedrun Diary Tiers:**\n"
                 "• Easy: 12 pts → 500 Points\n"
                 "• Medium: 24 pts → 1000 Points\n"
@@ -851,7 +696,7 @@ class BotCommands(commands.Cog):
                 "• Elite Speedrun OR Log Grandmaster → In-game rank\n"
                 "• Both Elite Speedrun AND Log Grandmaster → elusive in-game rank\n\n"
                 "**How to Participate**\n"
-                "Head to <#1386920119619289210> and submit your times using the official sheet."
+                "Head to <#1386920119619289210> for time submission instructions."
             ),
             color=discord.Color.dark_teal()
         )
@@ -868,7 +713,7 @@ class BotCommands(commands.Cog):
             title="📢 Important Info for Group Ironmen",
             description=(
                 "If your team provided **Rigour**, **Augury**, **DWH**, **BGS**, or **Elder Maul**, "
-                "you must manually mark your ranksheet and resubmit."
+                "you must update your rank calculator and resubmit."
             ),
             color=discord.Color.orange()
         )

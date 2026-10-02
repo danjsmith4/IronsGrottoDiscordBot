@@ -19,5 +19,4 @@ docker run -d \
   --env FORCE_CLEAR=0 \
   --mount "type=bind,src=$base/data,dst=/data" \
   --mount "type=bind,src=$base/secrets/bot.env,dst=/app/.env,readonly" \
-  --mount "type=bind,src=$base/secrets/google-service-account.json,dst=/run/secrets/google-service-account.json,readonly" \
   "$image"

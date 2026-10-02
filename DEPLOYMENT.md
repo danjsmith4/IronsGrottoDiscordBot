@@ -18,8 +18,7 @@ read access to the image or authenticate Unraid with a read:packages token.
 ## Credentials and data
 
 Credentials and runtime data are excluded from new commits and container
-images. The existing Google credential is mounted from Unraid as requested.
-Removing it from current Git tracking does not remove it from Git history.
+images. Only the bot environment settings are mounted from the secrets folder.
 
 Create `/mnt/user/appdata/irons-grotto-bot/data` and a sibling `secrets` folder.
 Give Unraid user 99, group 100 write access to data and read access to the secret
@@ -33,16 +32,14 @@ Copy these runtime files into data:
 - leaderboard_hashes.json
 - leaderboard_messages.json
 
-Put the Google credential in
-`secrets/google-service-account.json`. Create `secrets/bot.env` using
+Create `secrets/bot.env` using
 `.env.example` and the existing Apollo environment values. The download has no
 `.env`, so recover those values from the host before cancelling it. Transfer any
 additional configured EVENTBAN_* variables, preserving a path inside /data for
 EVENTBAN_DB_PATH. FORCE_CLEAR should remain 0 for routine startup.
 
 Do not copy the old .local folder. Dependencies are installed in the image.
-Do not copy the Google credential or discord.png into data: the entrypoint
-provides those paths separately.
+Do not copy discord.png into data: the entrypoint provides that path separately.
 
 ## First launch and updates
 
@@ -51,7 +48,7 @@ This workflow builds an x86-64 image on the GitHub-hosted runner.
 
 Stop the SparkedHost bot, take a fresh final copy of its data files, then start
 the Unraid bot. Do not run both copies simultaneously. Verify login, welcome
-messages, commands, leaderboards and Google Sheets access before cancelling
+messages, commands and leaderboards before cancelling
 hosting. The downloaded database copies have not been checked for consistency.
 
 With the compose file on Unraid, pull and start using:

@@ -9,7 +9,6 @@ services:
     volumes:
       - /mnt/user/appdata/irons-grotto-bot/data:/data
       - /mnt/user/appdata/irons-grotto-bot/secrets/bot.env:/app/.env:ro
-      - /mnt/user/appdata/irons-grotto-bot/secrets/google-service-account.json:/run/secrets/google-service-account.json:ro
     read_only: true
     tmpfs:
       - /tmp
