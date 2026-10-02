@@ -1,19 +1,13 @@
 import asyncio
 import logging
-import os
 import signal
 
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
-
-load_dotenv()
-
-from apply import Apply
-from bot_commands import BotCommands
-from imgur import ImgurOnly
-from leaderboardcommands import LeaderboardCommands
-from memberjoin import send_welcome_message
+import config
+from cogs.community import Community
+from cogs.moderation import Moderation
+from cogs.leaderboards import Leaderboards
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +20,11 @@ class GrottoBot(commands.Bot):
         super().__init__(command_prefix='.', intents=intents, case_insensitive=True)
 
     async def setup_hook(self):
-        for cog_type in (BotCommands, ImgurOnly, LeaderboardCommands, Apply):
+        for cog_type in (Community, Moderation, Leaderboards):
             await self.add_cog(cog_type(self))
-        guild_id = os.getenv('GUILD_ID')
+        guild_id = config.guild_id()
         guild = discord.Object(id=int(guild_id)) if guild_id else None
-        if os.getenv('FORCE_CLEAR') == '1':
+        if config.force_clear():
             self.tree.clear_commands(guild=guild)
             await self.tree.sync(guild=guild)
             if guild is not None:
@@ -46,18 +40,8 @@ class GrottoBot(commands.Bot):
     async def on_ready(self):
         logger.info('Logged in as %s (id=%s)', self.user, self.user.id)
 
-    async def on_member_join(self, member):
-        if not member.bot:
-            try:
-                await send_welcome_message(member, self)
-            except Exception:
-                logger.exception('Welcome failed for member %s in guild %s', member.id, member.guild.id)
-
-
 async def main():
-    token = os.getenv('DISCORD_BOT_TOKEN')
-    if not token:
-        raise RuntimeError('DISCORD_BOT_TOKEN is not configured')
+    token = config.bot_token()
     async with GrottoBot() as bot:
         loop = asyncio.get_running_loop()
         previous_handler = signal.signal(

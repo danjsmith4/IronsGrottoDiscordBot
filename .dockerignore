@@ -1,5 +1,5 @@
 **
 !*.py
-!discord.png
+!cogs/
+!cogs/*.py
 !requirements.txt
-!container-entrypoint.py

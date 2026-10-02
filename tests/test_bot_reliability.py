@@ -8,10 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from imgur import allowed_url
-from leaderboardcommands import LeaderboardCommands, lb_update
+from cogs.moderation import allowed_url
+from cogs.leaderboards import Leaderboards, lb_update
 from main import GrottoBot
-from memberjoin import send_welcome_message
+from cogs.community import send_welcome_message
 
 
 class LeaderboardTests(unittest.IsolatedAsyncioTestCase):
@@ -24,7 +24,7 @@ class LeaderboardTests(unittest.IsolatedAsyncioTestCase):
         self.channel.send = AsyncMock(return_value=SimpleNamespace(id=123))
         self.channel.get_partial_message.return_value.edit = AsyncMock()
         self.bot.get_channel.return_value = self.channel
-        self.cog = LeaderboardCommands(self.bot)
+        self.cog = Leaderboards(self.bot)
 
     async def asyncTearDown(self):
         await self.cog.cog_unload()
@@ -32,44 +32,44 @@ class LeaderboardTests(unittest.IsolatedAsyncioTestCase):
         self.directory.cleanup()
 
     async def test_submission_sorts_and_replaces_in_one_commit(self):
-        self.cog.save_entry('Zulrah', 'Alice', '1:30')
+        self.cog.store.save_entry('Zulrah', 'Alice', '1:30')
         statements = []
-        self.cog.conn.set_trace_callback(statements.append)
-        self.cog.save_entry('Zulrah', 'Bob', '1:20')
+        self.cog.store.conn.set_trace_callback(statements.append)
+        self.cog.store.save_entry('Zulrah', 'Bob', '1:20')
         self.assertEqual(sum(sql == 'COMMIT' for sql in statements), 1)
-        self.cog.save_entry('Zulrah', 'Alice', '1:10')
-        self.assertEqual([row[0] for row in self.cog.get_all_leaderboard_entries('Zulrah')], ['Alice', 'Bob'])
+        self.cog.store.save_entry('Zulrah', 'Alice', '1:10')
+        self.assertEqual([row[0] for row in self.cog.store.get_all_leaderboard_entries('Zulrah')], ['Alice', 'Bob'])
 
     async def test_failed_rank_update_preserves_previous_pb(self):
-        self.cog.save_entry('Zulrah', 'Alice', '1:30')
-        self.cog.conn.execute("CREATE TRIGGER fail_rank BEFORE UPDATE ON leaderboards BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+        self.cog.store.save_entry('Zulrah', 'Alice', '1:30')
+        self.cog.store.conn.execute("CREATE TRIGGER fail_rank BEFORE UPDATE ON leaderboards BEGIN SELECT RAISE(ABORT, 'test failure'); END")
         with self.assertRaises(sqlite3.IntegrityError):
-            self.cog.save_entry('Zulrah', 'Alice', '1:20')
-        self.assertEqual(self.cog.get_all_leaderboard_entries('Zulrah'), [('Alice', '1:30', '')])
+            self.cog.store.save_entry('Zulrah', 'Alice', '1:20')
+        self.assertEqual(self.cog.store.get_all_leaderboard_entries('Zulrah'), [('Alice', '1:30', '')])
 
     async def test_legacy_duplicate_names_can_be_ranked_without_data_loss(self):
-        self.cog.conn.executemany(
+        self.cog.store.conn.executemany(
             'INSERT INTO leaderboards (boss_name, user, time) VALUES (?, ?, ?)',
             [('Zulrah', 'Alice', '1:30'), ('Zulrah', 'Alice', '1:20')],
         )
-        self.cog.conn.commit()
-        self.cog.re_rank_leaderboard('Zulrah')
-        self.assertEqual(self.cog.conn.execute('SELECT rank FROM leaderboards ORDER BY rank').fetchall(), [(1,), (2,)])
+        self.cog.store.conn.commit()
+        self.cog.store.re_rank_leaderboard('Zulrah')
+        self.assertEqual(self.cog.store.conn.execute('SELECT rank FROM leaderboards ORDER BY rank').fetchall(), [(1,), (2,)])
 
     async def test_invalid_input_never_replaces_good_data(self):
-        self.cog.save_entry('Zulrah', 'Alice', '1:30')
+        self.cog.store.save_entry('Zulrah', 'Alice', '1:30')
         for value in ['nan', 'inf', '-5', '0', '1:99', '-1:59', 'garbage', '1:2:1000']:
             with self.subTest(value=value), self.assertRaises(ValueError):
-                self.cog.save_entry('Zulrah', 'Alice', value)
-        self.assertEqual(self.cog.get_all_leaderboard_entries('Zulrah')[0][1], '1:30')
+                self.cog.store.save_entry('Zulrah', 'Alice', value)
+        self.assertEqual(self.cog.store.get_all_leaderboard_entries('Zulrah')[0][1], '1:30')
 
     async def test_wave_ranking_and_removal_keep_contiguous_ranks(self):
-        self.cog.save_entry('Doom of Mokhaiotl', 'Alice', '12')
-        self.cog.save_entry('Doom of Mokhaiotl', 'Bob', '14')
-        self.assertEqual(self.cog.get_top_3_leaderboard('Doom of Mokhaiotl')[0][0], 'Bob')
-        deleted, bosses = self.cog.remove_entries('Bob')
+        self.cog.store.save_entry('Doom of Mokhaiotl', 'Alice', '12')
+        self.cog.store.save_entry('Doom of Mokhaiotl', 'Bob', '14')
+        self.assertEqual(self.cog.store.get_top_3_leaderboard('Doom of Mokhaiotl')[0][0], 'Bob')
+        deleted, bosses = self.cog.store.remove_entries('Bob')
         self.assertEqual((deleted, bosses), (1, ['Doom of Mokhaiotl']))
-        self.assertEqual(self.cog.conn.execute('SELECT rank FROM leaderboards').fetchall(), [(1,)])
+        self.assertEqual(self.cog.store.conn.execute('SELECT rank FROM leaderboards').fetchall(), [(1,)])
 
     async def test_concurrent_refreshes_send_only_one_message(self):
         async def send(**kwargs):
@@ -78,6 +78,14 @@ class LeaderboardTests(unittest.IsolatedAsyncioTestCase):
         self.channel.send.side_effect = send
         await asyncio.gather(*(self.cog.update_specific_leaderboard(None, 'Zulrah') for _ in range(3)))
         self.channel.send.assert_awaited_once()
+
+    async def test_shared_pages_preserve_all_entries(self):
+        entries = [(f'Player {i}', '1:20', '') for i in range(250)]
+        pages = self.cog.build_pages('Zulrah', entries, 0)
+        self.assertGreater(len(pages), 1)
+        self.assertTrue(all(len(page.description) <= 3500 for page in pages))
+        self.assertEqual(sum(len(page.description.splitlines()) for page in pages), 250)
+        self.assertEqual(pages[-1].footer.text, f'Page {len(pages)}/{len(pages)}')
 
     async def test_unchanged_update_is_skipped_but_forced_refresh_edits(self):
         await self.cog.update_specific_leaderboard(None, 'Zulrah')
@@ -89,9 +97,9 @@ class LeaderboardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_json_replace_preserves_existing_file(self):
         Path('state.json').write_text('{"old": true}')
-        with patch('leaderboardcommands.os.replace', side_effect=OSError('disk error')):
+        with patch('storage.os.replace', side_effect=OSError('disk error')):
             with self.assertRaises(OSError):
-                self.cog._save_json('state.json', {'new': True})
+                self.cog.store.save_json('state.json', {'new': True})
         self.assertEqual(json.loads(Path('state.json').read_text()), {'old': True})
 
     async def test_staff_update_defers_before_network_work(self):
@@ -149,5 +157,21 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                     bot.tree.sync.assert_awaited_once()
                     self.assertIsNotNone(bot.tree.get_command('lb'))
                     self.assertIsNotNone(bot.tree.get_command('apply'))
+                    self.assertEqual(set(bot.cogs), {'Community', 'Moderation', 'Leaderboards'})
+                    self.assertEqual({command.name for command in bot.commands}, {
+                        'diary', 'gim', 'collectionlog', 'help', 'leaderboard',
+                        'speedruns', 'remove_entry', 'update_leaderboard', 'joly',
+                        'bingorules', 'remove_entry_all', 'lbfaq', 'invite', 'apply',
+                        'temple', 'phugmaprotocol', 'submit', 'purge', 'rankcalc',
+                        'roll_user', 'leaderboards',
+                    })
+                    self.assertEqual({c.name for c in bot.tree.get_command('lb').commands}, {
+                        'view', 'submit', 'update', 'remove', 'clear-user', 'clear-boss',
+                        'refresh', 'refresh-all',
+                    })
+                    self.assertEqual({c.name for c in bot.tree.get_command('eventban').commands}, {
+                        'add', 'list', 'view', 'remove', 'clear',
+                    })
+                    self.assertEqual(len(bot.extra_events['on_member_join']), 1)
             finally:
                 os.chdir(previous_directory)

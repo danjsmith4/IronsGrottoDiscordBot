@@ -21,7 +21,7 @@ jobs:
       - name: Build Python 3.12 container
         run: docker build -t bot-check .
       - name: Check Python syntax without starting the bot
-        run: docker run --rm --entrypoint python bot-check -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8-sig'), filename=str(p)) for p in pathlib.Path('/app').glob('*.py')]"
+        run: docker run --rm --entrypoint python bot-check -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8-sig'), filename=str(p)) for p in pathlib.Path('/app').rglob('*.py')]"
       - name: Test bot startup without external services
         run: docker run --rm -v "$PWD/tests:/tests:ro" --entrypoint python bot-check -m unittest discover -s /tests -p 'test_bot*.py'
       - name: Save the checked image

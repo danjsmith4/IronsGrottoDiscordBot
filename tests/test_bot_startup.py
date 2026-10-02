@@ -3,11 +3,13 @@ import os
 import tempfile
 import unittest
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import discord
 from discord.ext import commands
 
-from bot_commands import BotCommands
+from cogs.community import Community
+from cogs.moderation import Moderation
 
 
 class BotStartupTests(unittest.IsolatedAsyncioTestCase):
@@ -16,8 +18,9 @@ class BotStartupTests(unittest.IsolatedAsyncioTestCase):
         self.directory = tempfile.TemporaryDirectory()
         os.chdir(self.directory.name)
         self.bot = commands.Bot(command_prefix='.', intents=discord.Intents.none())
-        self.cog = BotCommands(self.bot)
+        self.cog = Community(self.bot)
         await self.bot.add_cog(self.cog)
+        await self.bot.add_cog(Moderation(self.bot))
 
     async def asyncTearDown(self):
         await self.bot.close()
@@ -37,6 +40,18 @@ class BotStartupTests(unittest.IsolatedAsyncioTestCase):
         embed = context.send.call_args.kwargs['embed']
         self.assertIn('https://ironsgrotto.xyz', embed.description)
         self.assertNotIn('sheet', embed.description.lower())
+
+    async def test_submission_review_preserves_both_outcomes(self):
+        moderation = self.bot.get_cog('Moderation')
+        user = SimpleNamespace(bot=False, roles=[SimpleNamespace(name='Owner')])
+        for emoji, outcome in [('✅', 'accepted'), ('❌', 'denied')]:
+            message = SimpleNamespace(
+                channel=SimpleNamespace(id=moderation.target_channel_id),
+                delete=AsyncMock(), author=SimpleNamespace(send=AsyncMock()),
+            )
+            await moderation.on_reaction_add(SimpleNamespace(message=message, emoji=emoji), user)
+            message.delete.assert_awaited_once()
+            message.author.send.assert_awaited_once_with(f'Your submission was {outcome}.')
 
 
 if __name__ == '__main__':

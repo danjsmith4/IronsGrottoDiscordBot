@@ -9,9 +9,9 @@ bypass if you want the approval rule enforced for administrators too.
 The workflow's environment name alone DOES NOT require approval: configure the
 required reviewer before pushing this workflow.
 
-Each push to main builds and checks Python syntax. Publication waits for
+Each push to main builds, checks Python syntax, and runs offline bot and updater tests. Publication waits for
 approval, then publishes `approved` and an immutable-by-convention commit SHA
-tag to GitHub Container Registry. This is a syntax check, not a live bot test.
+tag to GitHub Container Registry. These checks do not connect to Discord or use production data.
 Package visibility is separate from repository visibility: configure public
 read access to the image or authenticate Unraid with a read:packages token.
 
