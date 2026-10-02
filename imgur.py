@@ -1,6 +1,17 @@
 import discord
 from discord.ext import commands
 import re
+from urllib.parse import urlsplit
+
+URL_PATTERN = re.compile(r'https?://[^\s<>"]+|www\.[^\s<>"]+')
+
+
+def allowed_url(url):
+    try:
+        host = urlsplit(url if '://' in url else 'https://' + url).hostname or ''
+        return any(host == domain or host.endswith('.' + domain) for domain in ('imgur.com', 'gyazo.com'))
+    except ValueError:
+        return False
 
 async def setup(bot):
     await bot.add_cog(ImgurOnly(bot))
@@ -9,7 +20,6 @@ class ImgurOnly(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.target_channel_id = 1357560551219396628  # Replace with your target channel ID
-        self.allowed_domains = ("imgur.com", "gyazo.com", "i.gyazo.com")
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -23,24 +33,23 @@ class ImgurOnly(commands.Cog):
 
         if message.attachments:
             for attachment in message.attachments:
-                if not attachment.url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4')):
+                if not attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4')):
                     await message.reply("All image and video links must be Imgur or Gyazo links.")
                     await message.delete()
                     return
                 urls.append(attachment.url)
 
         else:
-            url_pattern = re.compile(r'https?://[^\s<>"]+|www\.[^\s<>"]+')
-            urls = url_pattern.findall(message.content)
+            urls = URL_PATTERN.findall(message.content)
 
             for url in urls:
-                if not any(domain in url.lower() for domain in self.allowed_domains):
+                if not allowed_url(url):
                     await message.reply("All image and video links must be Imgur or Gyazo links.")
                     await message.delete()
                     return
 
         # Add reactions if at least one valid link exists
-        if any(any(domain in url.lower() for domain in self.allowed_domains) for url in urls):
+        if urls:
             await message.add_reaction("✅")
             await message.add_reaction("❌")
 

@@ -6,6 +6,12 @@ import sqlite3
 import json
 import asyncio
 import hashlib
+import logging
+import math
+import os
+import tempfile
+import re
+from pathlib import Path
 from typing import List, Optional
 
 EMBED_DESC_LIMIT = 4096
@@ -14,6 +20,8 @@ LEADERBOARD_CHANNEL_ID = 1357210920882798763
 
 MSG_IDS_PATH = "leaderboard_messages.json"
 HASHES_PATH = "leaderboard_hashes.json"
+logger = logging.getLogger(__name__)
+TIME_PART = re.compile(r'\d+(?:\.\d+)?')
 
 # Bosses that are ranked by deepest wave (higher is better)
 WAVE_BOSSES = {"Doom of Mokhaiotl"}
@@ -67,6 +75,7 @@ class LeaderboardCommands(commands.Cog):
         self.create_leaderboard_table()
         self.leaderboard_messages = self._load_json(MSG_IDS_PATH)
         self.leaderboard_hashes = self._load_json(HASHES_PATH)
+        self._update_locks = {}
 
         self.boss_images = {
             "Alchemical Hydra": "https://i.imgur.com/ABJ2QsO.png",
@@ -150,6 +159,11 @@ class LeaderboardCommands(commands.Cog):
             "Yama": ["yama"],
         }
 
+        self._boss_names = sorted(self.boss_aliases.keys() | self.boss_images.keys())
+        self._boss_lookup = {name.lower(): name for name in self._boss_names}
+        for name, aliases in self.boss_aliases.items():
+            self._boss_lookup.update((alias.lower(), name) for alias in aliases)
+
     async def cog_load(self):
         """Register the /lb slash group ONCE when this cog is loaded."""
         if self.bot.tree.get_command("lb") is None:
@@ -181,41 +195,51 @@ class LeaderboardCommands(commands.Cog):
     def _load_json(self, path: str) -> dict:
         try:
             with open(path, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                if not isinstance(data, dict):
+                    raise ValueError(f'{path} must contain a JSON object')
+                return data
         except FileNotFoundError:
             return {}
-        except Exception:
-            return {}
+        except (OSError, ValueError):
+            logger.exception('Cannot read leaderboard state %s', path)
+            raise
 
     def _save_json(self, path: str, data: dict):
+        destination = Path(path)
+        temporary = None
         try:
-            with open(path, "w") as f:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=destination.parent, delete=False) as f:
+                temporary = f.name
                 json.dump(data, f, indent=2)
-        except Exception:
-            pass
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, destination)
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
 
     # ---------- Helpers ----------
     def _proof_part(self, link: str) -> str:
         return f"([Proof]({link}))" if link else ""
 
     def _all_known_bosses(self) -> List[str]:
-        return sorted(set(list(self.boss_aliases.keys()) + list(self.boss_images.keys())))
+        return self._boss_names.copy()
 
     def standardize_boss_name(self, boss_name: str) -> Optional[str]:
-        name = boss_name.strip().lower()
-        for standard, aliases in self.boss_aliases.items():
-            if name == standard.lower() or name in (a.lower() for a in aliases):
-                return standard
-        for standard in self._all_known_bosses():
-            if name == standard.lower():
-                return standard
-        return None
+        return self._boss_lookup.get(boss_name.strip().lower())
 
     def _convert_time(self, time_str: str) -> float:
-        parts = time_str.split(':')
+        parts = time_str.strip().split(':')
         try:
+            if not 1 <= len(parts) <= 3 or not all(TIME_PART.fullmatch(part) for part in parts):
+                return float('inf')
+            if len(parts) > 1 and (not parts[0].isdigit() or float(parts[1]) >= 60):
+                return float('inf')
             if len(parts) == 3:
                 m, s, ms = map(float, parts)
+                if ms >= 1000:
+                    return float('inf')
                 return m * 60 + s + ms / 1000.0
             elif len(parts) == 2:
                 m = float(parts[0]); s = float(parts[1])
@@ -300,9 +324,13 @@ class LeaderboardCommands(commands.Cog):
         return self.cursor.fetchall()
 
     def re_rank_leaderboard(self, boss_name):
+        with self.conn:
+            self._rank_rows(boss_name)
+
+    def _rank_rows(self, boss_name):
         self.cursor.execute(
             '''
-            SELECT user, time, proof_link FROM leaderboards
+            SELECT rowid, user, time, proof_link FROM leaderboards
             WHERE boss_name = ?
             ''',
             (boss_name,)
@@ -310,24 +338,57 @@ class LeaderboardCommands(commands.Cog):
         entries = self.cursor.fetchall()
 
         key_fn = self._sort_key_for_boss(boss_name)
-        sorted_entries = sorted(entries, key=key_fn)
+        sorted_entries = sorted(entries, key=lambda row: key_fn(row[1:]))
 
         self.cursor.execute('UPDATE leaderboards SET rank = NULL WHERE boss_name = ?', (boss_name,))
-        self.conn.commit()
 
-        for rank, (user, time, _) in enumerate(sorted_entries, start=1):
+        self.cursor.executemany(
+            'UPDATE leaderboards SET rank = ? WHERE rowid = ?',
+            ((rank, row[0]) for rank, row in enumerate(sorted_entries, start=1)),
+        )
+
+    def save_entry(self, boss, user, value, proof_link=None):
+        user = user.strip()
+        value = value.strip()
+        if not user or len(user) > 32:
+            raise ValueError('Enter an OSRS name between 1 and 32 characters.')
+        if len(value) > 20:
+            raise ValueError('The time or wave value is too long.')
+        if self._is_wave_boss(boss):
+            if self._parse_wave(value) < 0:
+                raise ValueError('Please enter a valid wave number (integer).')
+            value = str(self._parse_wave(value))
+        else:
+            seconds = self._convert_time(value)
+            if not math.isfinite(seconds) or seconds <= 0:
+                raise ValueError('Please enter a positive time, such as 1:23.45.')
+        with self.conn:
+            self.cursor.execute('DELETE FROM leaderboards WHERE boss_name = ? AND user = ?', (boss, user))
             self.cursor.execute(
-                '''
-                UPDATE leaderboards
-                SET rank = ?
-                WHERE boss_name = ? AND user = ?
-                ''',
-                (rank, boss_name, user)
+                'INSERT INTO leaderboards (boss_name, user, time, proof_link, rank) VALUES (?, ?, ?, ?, NULL)',
+                (boss, user, value, proof_link or ''),
             )
-        self.conn.commit()
+            self._rank_rows(boss)
+        return value
+
+    def remove_entries(self, user, boss=None):
+        clause = 'user = ?' + (' AND boss_name = ?' if boss else '')
+        values = (user, boss) if boss else (user,)
+        with self.conn:
+            bosses = [row[0] for row in self.conn.execute(
+                'SELECT DISTINCT boss_name FROM leaderboards WHERE ' + clause, values)]
+            deleted = self.conn.execute('DELETE FROM leaderboards WHERE ' + clause, values).rowcount
+            for name in bosses:
+                self._rank_rows(name)
+        return deleted, bosses
 
     # ---------- Channel updater with no-op skip ----------
-    async def update_specific_leaderboard(self, ctx_or_inter, boss_name: str):
+    async def update_specific_leaderboard(self, ctx_or_inter, boss_name: str, *, force=False):
+        lock = self._update_locks.setdefault(boss_name, asyncio.Lock())
+        async with lock:
+            await self._update_specific_leaderboard(ctx_or_inter, boss_name, force=force)
+
+    async def _update_specific_leaderboard(self, ctx_or_inter, boss_name, *, force=False):
         channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
         if not channel:
             try:
@@ -349,7 +410,7 @@ class LeaderboardCommands(commands.Cog):
         old_hash = str(self.leaderboard_hashes.get(boss_name, ""))
 
         # Skip if nothing changed and we already have a message
-        if new_hash == old_hash and boss_name in self.leaderboard_messages:
+        if not force and new_hash == old_hash and boss_name in self.leaderboard_messages:
             return
 
         description = "\n".join(lines)
@@ -361,9 +422,10 @@ class LeaderboardCommands(commands.Cog):
         if boss_name in self.boss_images:
             embed.set_thumbnail(url=self.boss_images[boss_name])
 
+        previous_id = self.leaderboard_messages.get(boss_name)
         if boss_name in self.leaderboard_messages:
             try:
-                msg = await channel.fetch_message(self.leaderboard_messages[boss_name])
+                msg = channel.get_partial_message(self.leaderboard_messages[boss_name])
                 await msg.edit(embed=embed)
             except discord.NotFound:
                 msg = await channel.send(embed=embed)
@@ -372,12 +434,10 @@ class LeaderboardCommands(commands.Cog):
             msg = await channel.send(embed=embed)
             self.leaderboard_messages[boss_name] = msg.id
 
-        self._save_json(MSG_IDS_PATH, self.leaderboard_messages)
+        if previous_id != self.leaderboard_messages[boss_name]:
+            self._save_json(MSG_IDS_PATH, self.leaderboard_messages)
         self.leaderboard_hashes[boss_name] = new_hash
         self._save_json(HASHES_PATH, self.leaderboard_hashes)
-
-        # Gentle pacing against rate limits on PATCH/POST
-        await asyncio.sleep(1.1)
 
     # ---------- Prefix Commands (still available) ----------
     @commands.command(case_insensitive=True)
@@ -427,17 +487,11 @@ class LeaderboardCommands(commands.Cog):
             await ctx.send(f"Boss '{boss_name}' not found. Please recheck the name and try again.")
             return
 
-        self.cursor.execute('DELETE FROM leaderboards WHERE boss_name = ? AND user = ?', (boss, user))
-        self.cursor.execute(
-            '''
-            INSERT INTO leaderboards (boss_name, user, time, proof_link, rank)
-            VALUES (?, ?, ?, ?, NULL)
-            ''',
-            (boss, user, time, proof_link or "")
-        )
-        self.conn.commit()
-
-        self.re_rank_leaderboard(boss)
+        try:
+            self.save_entry(boss, user, time, proof_link)
+        except ValueError as error:
+            await ctx.send(str(error))
+            return
         await self.update_specific_leaderboard(ctx, boss)
         await ctx.send(f"{boss} leaderboard updated for {user}.")
 
@@ -449,18 +503,16 @@ class LeaderboardCommands(commands.Cog):
             await ctx.send(f"Boss '{boss_name}' not found. Please recheck the name and try again.")
             return
 
-        self.cursor.execute('DELETE FROM leaderboards WHERE boss_name = ? AND user = ?', (boss, user))
-        self.conn.commit()
-
-        self.re_rank_leaderboard(boss)
+        self.remove_entries(user, boss)
         await self.update_specific_leaderboard(ctx, boss)
         await ctx.send(f"Removed {user} from {boss} leaderboard.")
 
     @commands.command(case_insensitive=True)
     @commands.has_role("Owner")
     async def remove_entry_all(self, ctx, user):
-        self.cursor.execute('DELETE FROM leaderboards WHERE user = ?', (user,))
-        self.conn.commit()
+        _, bosses = self.remove_entries(user)
+        for boss in bosses:
+            await self.update_specific_leaderboard(ctx, boss)
         await ctx.send(f"Removed all entries for {user}.")
 
     @commands.command(case_insensitive=True)
@@ -609,37 +661,22 @@ async def lb_submit(interaction: discord.Interaction, boss: str):
         return
 
     async def _save_modal(interaction: discord.Interaction, boss: str, osrs_name: str, time: str, proof_link: str):
-        # interpret metric
-        if boss in WAVE_BOSSES:
-            wave = cog._parse_wave(time)
-            if wave < 0:
-                await interaction.response.send_message("Please enter a valid wave number (integer).", ephemeral=True)
-                return
-            store_value = str(wave)
-        else:
-            store_value = time
-
-        cog.cursor.execute('DELETE FROM leaderboards WHERE boss_name = ? AND user = ?', (boss, osrs_name))
-        cog.cursor.execute(
-            '''
-            INSERT INTO leaderboards (boss_name, user, time, proof_link, rank)
-            VALUES (?, ?, ?, ?, NULL)
-            ''',
-            (boss, osrs_name, store_value, proof_link or "")
-        )
-        cog.conn.commit()
-
-        cog.re_rank_leaderboard(boss)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            store_value = cog.save_entry(boss, osrs_name, time, proof_link)
+        except ValueError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+            return
         await cog.update_specific_leaderboard(interaction, boss)
 
         label = f"Wave {store_value}" if boss in WAVE_BOSSES else store_value
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Submitted PB for **{boss}** as **{osrs_name}** ({label}).",
             ephemeral=True
         )
 
     modal = SubmitPBModal(std, on_save=_save_modal)
-    modal.title = f"Submit PB — {std}"
+    modal.title = f"Submit PB — {std}"[:45]
     await interaction.response.send_modal(modal)
 
 
@@ -678,31 +715,16 @@ async def lb_update(
         await interaction.response.send_message(f"Boss '{boss}' not found.", ephemeral=True)
         return
 
-    # interpret metric
-    if std in WAVE_BOSSES:
-        wave = cog._parse_wave(time)
-        if wave < 0:
-            await interaction.response.send_message("Please enter a valid wave number (integer).", ephemeral=True)
-            return
-        store_value = str(wave)
-    else:
-        store_value = time
-
-    cog.cursor.execute('DELETE FROM leaderboards WHERE boss_name = ? AND user = ?', (std, osrs_name))
-    cog.cursor.execute(
-        '''
-        INSERT INTO leaderboards (boss_name, user, time, proof_link, rank)
-        VALUES (?, ?, ?, ?, NULL)
-        ''',
-        (std, osrs_name, store_value, proof_link or "")
-    )
-    cog.conn.commit()
-
-    cog.re_rank_leaderboard(std)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        store_value = cog.save_entry(std, osrs_name, time, proof_link)
+    except ValueError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
     await cog.update_specific_leaderboard(interaction, std)
 
     label = f"Wave {store_value}" if std in WAVE_BOSSES else store_value
-    await interaction.response.send_message(f"✅ Updated **{std}** for **{osrs_name}** ({label}).", ephemeral=True)
+    await interaction.followup.send(f"✅ Updated **{std}** for **{osrs_name}** ({label}).", ephemeral=True)
 
 
 @lb_update.autocomplete('boss')
@@ -738,16 +760,14 @@ async def lb_remove(
         await interaction.response.send_message(f"Boss '{boss}' not found.", ephemeral=True)
         return
 
-    cog.cursor.execute('DELETE FROM leaderboards WHERE boss_name = ? AND user = ?', (std, osrs_name))
-    deleted = cog.cursor.rowcount
-    cog.conn.commit()
+    await interaction.response.defer(ephemeral=True)
+    deleted, _ = cog.remove_entries(osrs_name, std)
 
     if deleted:
-        cog.re_rank_leaderboard(std)
         await cog.update_specific_leaderboard(interaction, std)
-        await interaction.response.send_message(f"🗑️ Removed **{osrs_name}** from **{std}**.", ephemeral=True)
+        await interaction.followup.send(f"🗑️ Removed **{osrs_name}** from **{std}**.", ephemeral=True)
     else:
-        await interaction.response.send_message(f"Nothing to remove: **{osrs_name}** had no entry for **{std}**.", ephemeral=True)
+        await interaction.followup.send(f"Nothing to remove: **{osrs_name}** had no entry for **{std}**.", ephemeral=True)
 
 
 @lb_remove.autocomplete('boss')
@@ -783,25 +803,18 @@ async def lb_clear_user(
         await interaction.response.send_message("Leaderboard system not ready.", ephemeral=True)
         return
 
-    # Find bosses impacted first
-    cog.cursor.execute('SELECT DISTINCT boss_name FROM leaderboards WHERE user = ?', (osrs_name,))
-    bosses = [row[0] for row in cog.cursor.fetchall()]
-
-    cog.cursor.execute('DELETE FROM leaderboards WHERE user = ?', (osrs_name,))
-    deleted = cog.cursor.rowcount
-    cog.conn.commit()
+    await interaction.response.defer(ephemeral=True)
+    deleted, bosses = cog.remove_entries(osrs_name)
 
     if not deleted:
-        await interaction.response.send_message(f"Nothing to clear: **{osrs_name}** has no entries.", ephemeral=True)
+        await interaction.followup.send(f"Nothing to clear: **{osrs_name}** has no entries.", ephemeral=True)
         return
 
     # Re-rank + refresh affected boss embeds
     for b in bosses:
-        cog.re_rank_leaderboard(b)
         await cog.update_specific_leaderboard(interaction, b)
-        await asyncio.sleep(0.5)
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"🧹 Cleared **{deleted}** record(s) for **{osrs_name}** across **{len(bosses)}** boss(es).",
         ephemeral=True
     )
@@ -835,6 +848,7 @@ async def lb_clear_boss(
         await interaction.response.send_message(f"Boss '{boss}' not found.", ephemeral=True)
         return
 
+    await interaction.response.defer(ephemeral=True)
     cog.cursor.execute('DELETE FROM leaderboards WHERE boss_name = ?', (std,))
     deleted = cog.cursor.rowcount
     cog.conn.commit()
@@ -842,7 +856,7 @@ async def lb_clear_boss(
     cog.re_rank_leaderboard(std)
     await cog.update_specific_leaderboard(interaction, std)
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"🧨 Cleared **{deleted}** record(s) from **{std}**.",
         ephemeral=True
     )
@@ -870,9 +884,10 @@ async def lb_refresh(interaction: discord.Interaction, boss: str):
     if std is None:
         await interaction.response.send_message(f"Boss '{boss}' not found.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True)
     cog.re_rank_leaderboard(std)
-    await cog.update_specific_leaderboard(interaction, std)
-    await interaction.response.send_message(f"🔄 Refreshed **{std}**.", ephemeral=True)
+    await cog.update_specific_leaderboard(interaction, std, force=True)
+    await interaction.followup.send(f"🔄 Refreshed **{std}**.", ephemeral=True)
 
 
 @lb_refresh.autocomplete('boss')
@@ -898,7 +913,6 @@ async def lb_refresh_all(interaction: discord.Interaction):
 
     for b in bosses:
         cog.re_rank_leaderboard(b)
-        await cog.update_specific_leaderboard(interaction, b)
-        await asyncio.sleep(0.6)
+        await cog.update_specific_leaderboard(interaction, b, force=True)
 
     await interaction.followup.send("✅ Finished refreshing all leaderboards.", ephemeral=True)
