@@ -158,7 +158,8 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNotNone(bot.tree.get_command('lb'))
                     self.assertIsNotNone(bot.tree.get_command('apply'))
                     self.assertIsNotNone(bot.tree.get_command('bump'))
-                    self.assertEqual(set(bot.cogs), {'Community', 'Moderation', 'Leaderboards'})
+                    self.assertEqual(set(bot.cogs), {'Community', 'Moderation', 'Leaderboards', 'Events'})
+                    self.assertEqual({c.name for c in bot.tree.get_command('event').commands}, {'add', 'list', 'remove'})
                     self.assertEqual({command.name for command in bot.commands}, {
                         'diary', 'gim', 'collectionlog', 'help', 'leaderboard',
                         'speedruns', 'remove_entry', 'update_leaderboard', 'joly',

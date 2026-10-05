@@ -17,6 +17,43 @@ logger = logging.getLogger(__name__)
 TIME_PART = re.compile(r'\d+(?:\.\d+)?')
 
 
+class EventStore:
+    def __init__(self, path='events.sqlite3'):
+        self.path = path
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, starts INTEGER NOT NULL, ends INTEGER NOT NULL)')
+            conn.execute('CREATE TABLE IF NOT EXISTS event_schedule (guild_id INTEGER PRIMARY KEY, next_due INTEGER NOT NULL, message_id INTEGER)')
+
+    def add(self, guild_id, title, description, starts, ends):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            return conn.execute('INSERT INTO events (guild_id,title,description,starts,ends) VALUES (?,?,?,?,?)',
+                                (guild_id, title, description, starts, ends)).lastrowid
+
+    def list(self, guild_id, now, *, active=False):
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.row_factory = sqlite3.Row
+            query = 'SELECT * FROM events WHERE guild_id=? AND ends>?'
+            args = [guild_id, now]
+            if active:
+                query += ' AND starts<=?'
+                args.append(now)
+            return [dict(row) for row in conn.execute(query + ' ORDER BY ends,id', args)]
+
+    def remove(self, guild_id, event_id):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            return conn.execute('DELETE FROM events WHERE guild_id=? AND id=?', (guild_id, event_id)).rowcount
+
+    def schedule(self, guild_id):
+        with closing(sqlite3.connect(self.path)) as conn:
+            row = conn.execute('SELECT next_due,message_id FROM event_schedule WHERE guild_id=?', (guild_id,)).fetchone()
+            return row if row else (0, None)
+
+    def announced(self, guild_id, next_due, message_id):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('INSERT INTO event_schedule VALUES (?,?,?) ON CONFLICT(guild_id) DO UPDATE SET next_due=excluded.next_due,message_id=excluded.message_id',
+                         (guild_id, next_due, message_id))
+
+
 class BumpStore:
     """A single persistent reminder, separate from existing bot databases."""
 

@@ -10,6 +10,7 @@ Python 3.12 Discord bot, hosted in Docker on Unraid.
 | `config.py` | Environment settings, channel IDs, boss aliases and images |
 | `cogs/community.py` | Welcomes, applications, community information |
 | `cogs/moderation.py` | Event bans, submission review, message cleanup |
+| `cogs/events.py` | Staff-managed events and eight-hour announcement rotation |
 | `cogs/leaderboards.py` | Leaderboard commands, forms, Discord messages |
 | `storage.py` | SQLite queries, ranking, input validation, atomic JSON writes |
 
@@ -34,6 +35,26 @@ bash tests/test-updater.sh
 Tests use temporary databases and mocked Discord connections.
 
 ## Deployment
+
+### Event Announcements
+
+Staff role `829386451624001539` can use:
+
+- `/event add title:... description:... end:2027-01-01 start:2026-12-01`
+- `/event list` to find event IDs (ongoing and future events).
+- `/event remove event_id:...`
+
+Dates use `YYYY-MM-DD` in America/New_York, including daylight saving changes.
+The end date includes the entire day. Omit start for an immediately active event.
+Every eight hours, one random active event is announced in `697877518513864791`.
+Future and expired events are excluded. If the last announcement is still the
+latest channel message, it is edited instead of posting again. No role or everyone
+pings are sent. With no active events, no new announcement is posted.
+
+The first eligible event is announced within a minute when no previous timer exists.
+Events and the timer persist in `events.sqlite3` in the backed-up data folder.
+The bot needs View Channel, Read Message History, Send Messages, and Embed Links.
+If history cannot be read, it skips posting and logs the failure to avoid spam.
 
 ### Forum Bump Reminders
 

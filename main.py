@@ -8,6 +8,7 @@ import config
 from cogs.community import Community
 from cogs.moderation import Moderation
 from cogs.leaderboards import Leaderboards
+from cogs.events import Events
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ class GrottoBot(commands.Bot):
         super().__init__(command_prefix='.', intents=intents, case_insensitive=True)
 
     async def setup_hook(self):
-        for cog_type in (Community, Moderation, Leaderboards):
+        for cog_type in (Community, Moderation, Leaderboards, Events):
             await self.add_cog(cog_type(self))
         guild_id = config.guild_id()
         guild = discord.Object(id=int(guild_id)) if guild_id else None
