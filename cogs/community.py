@@ -3,6 +3,7 @@ import logging
 import random
 import asyncio
 import time
+from pathlib import Path
 from typing import Literal
 
 import discord
@@ -229,54 +230,34 @@ class Community(commands.Cog):
     @commands.command(name='rankcalc')
     async def rankcalc(self, ctx):
         main_embed = discord.Embed(
-            title="How to Use the Irons Grotto Rank Calculator ",
+            title="How to Apply for a Clan Rank",
             description=(
-                f"Head on over to {self.rank_calculator_app_link} and log in with Discord (we cannot see your login credentials).\n\n"
-                "**1. Add Your Player:**\n"
-                "   After logging in, click \"Add new player\", and enter your player name, join date, and whether you're a mobile player or not.\n"
-                "**2. Access the Calculator:**\n"
-                "   After you have added your player, click it in the list to go to the rank calculator.\n\n"
-                "**3. Fill Out the Form (Automatic or Manual):**\n"
-                "   With TempleOSRS + WikiSync, the form auto-fills; otherwise fill manually.\n\n"
-                "**4. Save & Apply for Promotion:**\n"
-                "   Click \"Save\" then \"Apply for promotion\".\n\n"
-                f"Rank applications are posted to <#{RANK_APPLICATION_CHANNEL_ID}> for review. 😄\n\n"
-                "---"
+                "**1. Open the website**\n"
+                f"Visit {self.rank_calculator_app_link}, click **Apply for Rank**, then log in with Discord.\n\n"
+                "**2. Add your account**\n"
+                "Open the **Accounts** tab, click **New Account**, and follow the website's prompts.\n\n"
+                "**Using RuneLite? Complete these steps too:**\n\n"
+                "**3. Install the plugin**\n"
+                "Search for **Irons Grotto** in RuneLite's **Plugin Hub** and install it.\n\n"
+                "**4. Link your account**\n"
+                "Copy the token provided by the website. Open the **Irons Grotto** plugin panel, "
+                "paste it into the **Token** section, then click **Join Irons Grotto**. "
+                "Keep your token private.\n\n"
+                "**5. Sync your collection log**\n"
+                "Open your in-game **Collection Log** and click the **Irons Grotto clan logo** "
+                "at the top, beside RuneProfile, to sync with our server. "
+                "The red arrow below points to the correct icon."
             ),
             color=discord.Color.dark_purple()
         )
 
-        name_change_embed = discord.Embed(
-            title="❓ I changed my name, what do I do?",
-            description=(
-                f"Update it at {self.rank_calculator_app_link} (pencil icon).\n"
-                "If validation glitches, message Avios or try a temporary name change."
-            ),
-            color=discord.Color.gold()
-        )
-
-        plugins_embed = discord.Embed(
-            title="🛠️ Helpful RuneLite Plugins",
-            description=(
-                "Install **WikiSync** and **TempleOSRS** to let the site see your log, CAs, diaries, and quests.\n"
-                "First time? **Upload your log** and **enable auto sync**."
-            ),
-            color=discord.Color.blue()
-        )
-
-        embed_img1 = discord.Embed(title="1️⃣ Upload your collection log to TempleOSRS", color=discord.Color.green())
-        embed_img1.set_image(url=self.image_url_1)
-        embed_img2 = discord.Embed(title="2️⃣ Enable TempleOSRS plugin auto-sync", color=discord.Color.green())
-        embed_img2.set_image(url=self.image_url_2)
-        embed_img3 = discord.Embed(title="3️⃣ Enable in-game setting for TempleOSRS sync", color=discord.Color.green())
-        embed_img3.set_image(url=self.image_url_3)
-
-        await ctx.send(embed=main_embed)
-        await ctx.send(embed=name_change_embed)
-        await ctx.send(embed=plugins_embed)
-        await ctx.send(embed=embed_img1)
-        await ctx.send(embed=embed_img2)
-        await ctx.send(embed=embed_img3)
+        main_embed.set_image(url='attachment://collection-log-sync.png')
+        screenshot = Path(__file__).resolve().parent.parent / 'assets' / 'collection-log-sync.png'
+        image = discord.File(screenshot, filename='collection-log-sync.png')
+        try:
+            await ctx.send(embed=main_embed, file=image)
+        finally:
+            image.close()
 
     @commands.command(name='diary')
     @commands.has_any_role(*STAFF_ROLES)

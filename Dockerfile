@@ -5,5 +5,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py ./
 COPY cogs ./cogs
+COPY assets ./assets
 WORKDIR /data
 CMD ["python", "/app/main.py"]

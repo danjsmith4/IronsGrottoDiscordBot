@@ -3,3 +3,5 @@
 !cogs/
 !cogs/*.py
 !requirements.txt
+!assets/
+!assets/*.png
