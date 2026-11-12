@@ -35,7 +35,7 @@ class BumpTests(unittest.IsolatedAsyncioTestCase):
             followup=SimpleNamespace(send=AsyncMock()),
         )
 
-    async def test_one_ping_until_done_even_after_reopening(self):
+    async def test_no_immediate_duplicate_even_after_reopening(self):
         await asyncio.gather(*(self.cog.send_bump_if_due() for _ in range(3)))
         self.cog.bump_store = BumpStore(self.path)
         await self.cog.send_bump_if_due()
@@ -44,6 +44,35 @@ class BumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([role.id for role in mentions.roles], [STAFF_ROLE_ID])
         self.assertFalse(mentions.everyone)
         self.assertTrue(self.cog.bump_view.is_persistent())
+
+    async def test_hourly_reping_persists_and_original_button_still_works(self):
+        with patch('cogs.community.time.time', return_value=1000):
+            await self.cog.send_bump_if_due()
+        self.cog.bump_store = BumpStore(self.path)
+        with patch('cogs.community.time.time', return_value=4599):
+            await self.cog.send_bump_if_due()
+        self.channel.send.assert_awaited_once()
+        with patch('cogs.community.time.time', return_value=4600):
+            await asyncio.gather(*(self.cog.send_bump_if_due() for _ in range(3)))
+        self.assertEqual(self.channel.send.await_count, 2)
+        self.assertIn('still waiting', self.channel.send.call_args.args[0])
+        self.assertEqual(self.cog.bump_store.read()['message_id'], 123)
+        with patch('cogs.community.time.time', return_value=8200):
+            await self.cog.send_bump_if_due()
+            await self.cog.complete_bump(self.interaction(), from_button=True)
+        self.assertEqual(self.channel.send.await_count, 3)
+        with patch('cogs.community.time.time', return_value=11800):
+            await self.cog.send_bump_if_due()
+        self.assertEqual(self.channel.send.await_count, 3)
+        self.assertEqual(self.cog.bump_store.read()['next_due'], 22600)
+
+    async def test_pause_blocks_overdue_reping(self):
+        with patch('cogs.community.time.time', return_value=1000):
+            await self.cog.send_bump_if_due()
+        self.cog.bump_store.pause(True)
+        with patch('cogs.community.time.time', return_value=10000):
+            await self.cog.send_bump_if_due()
+        self.channel.send.assert_awaited_once()
 
     async def test_done_waits_four_hours_and_rejects_stale_button(self):
         await self.cog.send_bump_if_due()

@@ -68,9 +68,9 @@ class BumpStore:
             conn.row_factory = sqlite3.Row
             return dict(conn.execute('SELECT * FROM reminder WHERE id=1').fetchone())
 
-    def sent(self, message_id):
+    def sent(self, message_id, next_due):
         with closing(sqlite3.connect(self.path)) as conn, conn:
-            conn.execute('UPDATE reminder SET message_id=? WHERE id=1', (message_id,))
+            conn.execute('UPDATE reminder SET message_id=?, next_due=? WHERE id=1', (message_id, next_due))
 
     def complete(self, user_id, next_due):
         with closing(sqlite3.connect(self.path)) as conn, conn:

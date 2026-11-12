@@ -90,11 +90,22 @@ class Community(commands.Cog):
     async def send_bump_if_due(self):
         async with self.bump_lock:
             state = self.bump_store.read()
-            if state['paused'] or state['message_id'] or time.time() < state['next_due']:
+            if state['paused'] or time.time() < state['next_due']:
                 return
             channel = self.bot.get_channel(BUMP_CHANNEL_ID)
             if channel is None:
                 channel = await self.bot.fetch_channel(BUMP_CHANNEL_ID)
+            if state['message_id']:
+                await channel.send(
+                    f'<@&{STAFF_ROLE_ID}> Our forum bump is still waiting to be done! '
+                    f'Please [bump the post]({BUMP_POST_URL}), then press **Bump Done** on '
+                    f'[the reminder](https://discord.com/channels/{channel.guild.id}/{BUMP_CHANNEL_ID}/{state["message_id"]}) '
+                    'or use `/bump done` in this channel.',
+                    allowed_mentions=discord.AllowedMentions(
+                        roles=[discord.Object(id=STAFF_ROLE_ID)], users=False, everyone=False),
+                )
+                self.bump_store.sent(state['message_id'], int(time.time()) + 3600)
+                return
             message = await channel.send(
                 f'<@&{STAFF_ROLE_ID}> Time to bump our forum post! '
                 'Please bump it manually, then press **Bump Done**.',
@@ -102,7 +113,7 @@ class Community(commands.Cog):
                 allowed_mentions=discord.AllowedMentions(
                     roles=[discord.Object(id=STAFF_ROLE_ID)], users=False, everyone=False),
             )
-            self.bump_store.sent(message.id)
+            self.bump_store.sent(message.id, int(time.time()) + 3600)
 
     async def bump_authorized(self, interaction):
         allowed = interaction.guild_id is not None and interaction.channel_id == BUMP_CHANNEL_ID
@@ -151,7 +162,7 @@ class Community(commands.Cog):
         if state['paused']:
             status = 'Reminders are paused.'
         elif state['message_id']:
-            status = 'Waiting for staff to bump the post and press Bump Done.'
+            status = f"Waiting for staff to bump the post and press Bump Done. Next staff re-ping <t:{state['next_due']}:R>."
         elif state['next_due'] <= time.time():
             status = 'A reminder is due and will be sent within one minute.'
         else:
