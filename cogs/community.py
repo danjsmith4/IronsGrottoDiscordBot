@@ -266,7 +266,22 @@ class Community(commands.Cog):
         screenshot = Path(__file__).resolve().parent.parent / 'assets' / 'collection-log-sync.png'
         image = discord.File(screenshot, filename='collection-log-sync.png')
         try:
-            await ctx.send(embed=main_embed, file=image)
+            note = discord.Embed(
+                title='Note: Event Management',
+                description=(
+                    'In RuneLite, open the **XP Updater** plugin settings and make sure '
+                    'the plugin is enabled. Turn on **TempleOSRS** and **Wise Old Man** '
+                    'for clan event management, as shown below.'
+                ),
+                color=discord.Color.gold(),
+            )
+            note.set_image(url='attachment://event-xp-updater.png')
+            settings_image = discord.File(screenshot.parent / 'event-xp-updater.png',
+                                          filename='event-xp-updater.png')
+            try:
+                await ctx.send(embeds=[main_embed, note], files=[image, settings_image])
+            finally:
+                settings_image.close()
         finally:
             image.close()
 

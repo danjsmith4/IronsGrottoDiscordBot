@@ -57,16 +57,21 @@ class BotStartupTests(unittest.IsolatedAsyncioTestCase):
     async def test_rankcalc_sends_current_steps_and_screenshot_in_one_message(self):
         context = AsyncMock()
         async def inspect_message(**kwargs):
-            self.assertEqual(kwargs['file'].fp.read(8), b'\x89PNG\r\n\x1a\n')
+            for image in kwargs['files']:
+                self.assertEqual(image.fp.read(8), b'\x89PNG\r\n\x1a\n')
         context.send.side_effect = inspect_message
         await self.cog.rankcalc.callback(self.cog, context)
         context.send.assert_awaited_once()
-        embed = context.send.call_args.kwargs['embed']
+        embed, note = context.send.call_args.kwargs['embeds']
         for text in ['Apply for Rank', 'Accounts', 'New Account', 'Plugin Hub',
                      'Token', 'Join Irons Grotto', 'Collection Log']:
             self.assertIn(text, embed.description)
         self.assertNotIn('TempleOSRS', embed.description)
         self.assertEqual(embed.image.url, 'attachment://collection-log-sync.png')
+        self.assertEqual(note.title, 'Note: Event Management')
+        for text in ['XP Updater', 'TempleOSRS', 'Wise Old Man']:
+            self.assertIn(text, note.description)
+        self.assertEqual(note.image.url, 'attachment://event-xp-updater.png')
 
 
 if __name__ == '__main__':
