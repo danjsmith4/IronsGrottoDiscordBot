@@ -46,10 +46,10 @@ Staff role `829386451624001539` can use:
 
 Dates use `YYYY-MM-DD` in America/New_York, including daylight saving changes.
 The end date includes the entire day. Omit start for an immediately active event.
-Every eight hours, one random active event is announced in `697877518513864791`.
-Future and expired events are excluded. If the last announcement is still the
+Every eight hours, one random ongoing or upcoming event is announced in `697877518513864791`.
+Expired events are excluded. Upcoming announcements include the start date. If the last announcement is still the
 latest channel message, it is edited instead of posting again. No role or everyone
-pings are sent. With no active events, no new announcement is posted.
+pings are sent. With no ongoing or upcoming events, no new announcement is posted.
 
 The first eligible event is announced within a minute when no previous timer exists.
 Events and the timer persist in `events.sqlite3` in the backed-up data folder.

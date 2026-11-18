@@ -55,17 +55,26 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             await self.cog.add.callback(self.cog, self.interaction(), 'Event', 'Details', end, start)
         self.assertEqual(self.cog.store.list(1, 0), [])
 
-    async def test_random_selection_only_contains_active_events(self):
+    async def test_random_selection_contains_ongoing_and_upcoming_but_not_expired(self):
         good = self.add_event()
         second = self.add_event()
-        self.add_event(starts=2000)
+        upcoming = self.add_event(starts=2000)
         self.add_event(ends=1000)
         self.add_event(guild=2)
         with patch('cogs.events.random.choice', side_effect=lambda rows: rows[0]) as choice:
             await self.cog.announce_if_due()
-        self.assertEqual([row['id'] for row in choice.call_args.args[0]], [good, second])
+        self.assertEqual([row['id'] for row in choice.call_args.args[0]], [good, second, upcoming])
         self.channel.send.assert_awaited_once()
         self.assertFalse(self.channel.send.call_args.kwargs['allowed_mentions'].everyone)
+
+    async def test_upcoming_event_announces_before_start_with_start_date(self):
+        self.add_event(starts=2000)
+        await self.cog.announce_if_due()
+        self.channel.send.assert_awaited_once()
+        embed = self.channel.send.call_args.kwargs['embed']
+        self.assertEqual(embed.fields[0].name, 'Starts')
+        self.assertIn('<t:2000:F>', embed.fields[0].value)
+        self.assertEqual(embed.fields[1].name, 'Ends')
 
     async def test_eight_hour_schedule_survives_restart(self):
         self.add_event()

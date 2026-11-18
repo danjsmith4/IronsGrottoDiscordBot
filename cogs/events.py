@@ -77,7 +77,7 @@ class Events(commands.Cog):
             event_id = self.store.add(interaction.guild_id, title.strip(), description.strip(), starts, ends)
         await interaction.followup.send(
             f'Added event #{event_id}: {title}. Ends after {end} Eastern time. '
-            'It will enter the random announcement rotation while active.',
+            'It is included in the random announcement rotation until it ends.',
             ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @events.command(name='list', description='List ongoing and future events with their IDs')
@@ -124,22 +124,24 @@ class Events(commands.Cog):
             next_due, previous_id = self.store.schedule(channel.guild.id)
             if now < next_due:
                 return
-            active = self.store.list(channel.guild.id, now, active=True)
-            if not active and previous_id is None:
+            eligible = self.store.list(channel.guild.id, now)
+            if not eligible and previous_id is None:
                 return
             # Read actual history: cached last_message_id can be stale after restarts/deletions.
             latest = next(iter([message async for message in channel.history(limit=1)]), None)
             ours = latest is not None and latest.author.id == self.bot.user.id and (
                 latest.id == previous_id or any(e.footer.text == MARKER for e in latest.embeds))
-            if not active:
+            if not eligible:
                 if ours:
-                    await latest.edit(content='No active events right now.', embed=None,
+                    await latest.edit(content='No ongoing or upcoming events right now.', embed=None,
                                       allowed_mentions=discord.AllowedMentions.none())
                 self.store.announced(channel.guild.id, now + EVENT_INTERVAL_SECONDS, previous_id)
                 return
-            event = random.choice(active)
+            event = random.choice(eligible)
             embed = discord.Embed(title=event['title'], description=event['description'],
                                   color=discord.Color.green())
+            if event['starts'] > now:
+                embed.add_field(name='Starts', value=f"<t:{event['starts']}:F> (<t:{event['starts']}:R>)")
             embed.add_field(name='Ends', value=f"<t:{event['ends'] - 1}:F> (<t:{event['ends'] - 1}:R>)")
             embed.set_footer(text=MARKER)
             if ours:
