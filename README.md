@@ -76,7 +76,15 @@ time, so late player updates are included; the board is then edited in place.
 Whether a result counts as SOTW (XP) or BOTW (KC) comes from what Temple
 tracked, not the name, so `RC BOTW` is a SOTW and `ToB SOTW Grotto` a BOTW.
 Ties credit every tied player with a win. Wins are grouped by RSN, so a name
-change starts a new count. Finished results are stored in `competitions.sqlite3`
+change starts a new count.
+
+Only current members appear anywhere on the board. Every check also reads the
+Temple member list (`api/groupmembers.php?id=241`), and a competition is shown
+only if its actual winner is still in the group; nobody is promoted into a win
+they did not get. People who rejoin get their wins back. If the member list
+cannot be loaded, or looks broken (under 20 names), the board is left as is.
+The message is only edited when its contents change.
+Full standings for finished competitions are stored in `competitions.sqlite3`
 in the data folder; the first run imports the full history (about a minute).
 If the board message is deleted, the next update posts a new one. The bot needs
 View Channel, Send Messages, and Embed Links in the board channel.

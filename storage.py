@@ -82,61 +82,79 @@ class BumpStore:
 
 
 class CompetitionStore:
-    """Finished TempleOSRS SOTW/BOTW results and the winners board message."""
+    """Finished TempleOSRS SOTW/BOTW standings and the winners board message.
+
+    Every player who gained is kept, so winners can be worked out against the
+    current clan member list each time the board is drawn.
+    """
 
     def __init__(self, path='competitions.sqlite3'):
         self.path = path
         with closing(sqlite3.connect(self.path)) as conn, conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'competition_winners' in tables:
+                # Earlier version kept only winners; refetch everything to get full standings.
+                conn.execute('DROP TABLE competition_winners')
+                conn.execute('DELETE FROM competitions')
             conn.execute('CREATE TABLE IF NOT EXISTS competitions (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, metric TEXT NOT NULL, ended INTEGER NOT NULL, gain INTEGER)')
-            conn.execute('CREATE TABLE IF NOT EXISTS competition_winners (competition_id INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL, PRIMARY KEY (competition_id, position))')
+            conn.execute('CREATE TABLE IF NOT EXISTS competition_players (competition_id INTEGER NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL, gain INTEGER NOT NULL, PRIMARY KEY (competition_id, name_key))')
             conn.execute('CREATE TABLE IF NOT EXISTS board (id INTEGER PRIMARY KEY, channel_id INTEGER, message_id INTEGER)')
-            conn.execute('INSERT OR IGNORE INTO board VALUES (1, NULL, NULL)')
+            if 'content_hash' not in {row[1] for row in conn.execute('PRAGMA table_info(board)')}:
+                conn.execute('ALTER TABLE board ADD COLUMN content_hash TEXT')
+            conn.execute('INSERT OR IGNORE INTO board (id) VALUES (1)')
+
+    @staticmethod
+    def name_key(name):
+        return ' '.join(name.replace('_', ' ').replace('-', ' ').lower().split())
 
     def known_ids(self):
         with closing(sqlite3.connect(self.path)) as conn:
             return {row[0] for row in conn.execute('SELECT id FROM competitions')}
 
-    def record(self, comp_id, name, category, metric, ended, winners, gain):
-        """Winners may be empty when nobody gained; the competition is still stored so it is not refetched.
-        Several winners means a tie, and each of them is credited with a win."""
+    def record(self, comp_id, name, category, metric, ended, players):
+        """players: (display name, gain) for everyone who gained; may be empty."""
+        best = {}
+        for player, gain in players:
+            key = self.name_key(player)
+            if key and gain > 0 and gain > best.get(key, ('', 0))[1]:
+                best[key] = (player, gain)
         with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('INSERT OR REPLACE INTO competitions VALUES (?,?,?,?,?,?)',
-                         (comp_id, name, category, metric, ended, gain if winners else None))
-            conn.execute('DELETE FROM competition_winners WHERE competition_id=?', (comp_id,))
-            conn.executemany('INSERT INTO competition_winners VALUES (?,?,?,?)',
-                             [(comp_id, i, winner, winner.lower()) for i, winner in enumerate(winners)])
+                         (comp_id, name, category, metric, ended, None))
+            conn.execute('DELETE FROM competition_players WHERE competition_id=?', (comp_id,))
+            conn.executemany('INSERT INTO competition_players VALUES (?,?,?,?)',
+                             [(comp_id, player, key, gain) for key, (player, gain) in best.items()])
 
-    def winners(self, category, limit):
-        """Most recent competitions that had a winner; each row has a 'winners' list."""
+    def results(self, category, members):
+        """Newest first. Each row's 'winners' are the competition's actual winners (top gain overall,
+        several on a tie) who are still members; competitions whose winners all left are left out."""
         with closing(sqlite3.connect(self.path)) as conn:
             conn.row_factory = sqlite3.Row
-            rows = [dict(row) for row in conn.execute(
-                'SELECT * FROM competitions WHERE category=? AND gain IS NOT NULL ORDER BY ended DESC, id DESC LIMIT ?',
-                (category, limit))]
-            for row in rows:
-                row['winners'] = [r[0] for r in conn.execute(
-                    'SELECT name FROM competition_winners WHERE competition_id=? ORDER BY position', (row['id'],))]
+            comps = [dict(row) for row in conn.execute(
+                'SELECT id, name, category, metric, ended FROM competitions WHERE category=? ORDER BY ended DESC, id DESC',
+                (category,))]
+            rows = []
+            for comp in comps:
+                top = conn.execute('SELECT MAX(gain) FROM competition_players WHERE competition_id=?',
+                                   (comp['id'],)).fetchone()[0]
+                winners = [(r['name'], r['name_key']) for r in conn.execute(
+                    'SELECT name, name_key FROM competition_players WHERE competition_id=? AND gain=? ORDER BY name',
+                    (comp['id'], top)) if r['name_key'] in members]
+                if winners:
+                    comp['gain'] = top
+                    comp['winners'] = [name for name, _ in winners]
+                    comp['winner_keys'] = [key for _, key in winners]
+                    rows.append(comp)
             return rows
-
-    def most_wins(self, category, limit):
-        """(display name from the most recent win, win count), most wins first; ties go to the most recent winner."""
-        with closing(sqlite3.connect(self.path)) as conn:
-            rows = conn.execute(
-                'SELECT w.name_key, COUNT(*), MAX(c.ended) FROM competition_winners w JOIN competitions c ON c.id=w.competition_id '
-                'WHERE c.category=? GROUP BY w.name_key ORDER BY COUNT(*) DESC, MAX(c.ended) DESC LIMIT ?',
-                (category, limit)).fetchall()
-            return [(conn.execute(
-                'SELECT w.name FROM competition_winners w JOIN competitions c ON c.id=w.competition_id '
-                'WHERE c.category=? AND w.name_key=? ORDER BY c.ended DESC LIMIT 1', (category, key)).fetchone()[0], count)
-                for key, count, _ in rows]
 
     def board(self):
         with closing(sqlite3.connect(self.path)) as conn:
-            return conn.execute('SELECT channel_id, message_id FROM board WHERE id=1').fetchone()
+            return conn.execute('SELECT channel_id, message_id, content_hash FROM board WHERE id=1').fetchone()
 
-    def set_board(self, channel_id, message_id):
+    def set_board(self, channel_id, message_id, content_hash=None):
         with closing(sqlite3.connect(self.path)) as conn, conn:
-            conn.execute('UPDATE board SET channel_id=?, message_id=? WHERE id=1', (channel_id, message_id))
+            conn.execute('UPDATE board SET channel_id=?, message_id=?, content_hash=? WHERE id=1',
+                         (channel_id, message_id, content_hash))
 
 
 def db():

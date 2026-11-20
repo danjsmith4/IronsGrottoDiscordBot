@@ -1,8 +1,11 @@
-"""TempleOSRS Skill/Boss of the Week winners board."""
+"""TempleOSRS Skill/Boss of the Week winners board, limited to current clan members."""
 import asyncio
+import hashlib
+import json
 import logging
 import re
 import time
+from collections import Counter
 
 import aiohttp
 import discord
@@ -16,9 +19,11 @@ logger = logging.getLogger(__name__)
 MARKER = 'Irons Grotto SOTW/BOTW winners'
 # Names like "Vorkath BOTW", "Sotw Prayer" or the truncated "Theatre of Blood Hard Mode BOT".
 WEEKLY_NAME = re.compile(r'\b[sb]otw?\b', re.IGNORECASE)
-# Temple keeps polling players briefly after the end time; wait before locking in a winner.
+# Temple keeps polling players briefly after the end time; wait before locking in results.
 RESULT_GRACE_SECONDS = 2 * 60 * 60
 REQUEST_SPACING_SECONDS = 1
+# A member list this short is treated as a Temple glitch rather than a mass exodus.
+MIN_MEMBERS = 20
 GROUP_COMPETITIONS_URL = f'https://templeosrs.com/groups/competitions.php?id={TEMPLE_GROUP_ID}'
 CATEGORIES = ('SOTW', 'BOTW')
 UNITS = {'SOTW': 'XP', 'BOTW': 'KC'}
@@ -32,57 +37,80 @@ def is_weekly(comp):
     return not comp.get('team_competition') and bool(WEEKLY_NAME.search(comp.get('name') or ''))
 
 
-def pick_winner(participants):
-    """Everyone tied on the highest positive gain; returns (names, gain) or ([], None)."""
+def standings(participants):
+    """(display name, gain) for every participant with a positive gain."""
     if isinstance(participants, dict):
         participants = list(participants.values())
-    names, best = [], None
+    players = []
     for player in participants or []:
         try:
             gain = int(player.get('gain') or 0)
         except (TypeError, ValueError):
             continue
         name = player.get('player_name_with_capitalization') or player.get('username')
-        if gain <= 0 or not name or (best is not None and gain < best):
-            continue
-        if best is None or gain > best:
-            names, best = [], gain
-        names.append(name)
-    return names, best
+        if gain > 0 and name:
+            players.append((name, gain))
+    return players
+
+
+def member_keys(members):
+    if isinstance(members, dict):
+        members = list(members.values())
+    if not isinstance(members, list):
+        raise ValueError('TempleOSRS member list has an unexpected format')
+    keys = {CompetitionStore.name_key(name) for name in members if isinstance(name, str) and name.strip()}
+    if len(keys) < MIN_MEMBERS:
+        raise ValueError(f'TempleOSRS member list has only {len(keys)} names; not trusting it')
+    return keys
 
 
 def names(row):
     return ' & '.join(f'**{discord.utils.escape_markdown(name)}**' for name in row['winners'])
 
 
-def build_embed(store):
+def most_wins(rows, limit):
+    """(latest display name, wins) for current members, most wins first, then most recent win."""
+    counts, display, latest = Counter(), {}, {}
+    for row in rows:  # newest first
+        for name, key in zip(row['winners'], row['winner_keys']):
+            counts[key] += 1
+            display.setdefault(key, name)
+            latest.setdefault(key, row['ended'])
+    ranked = sorted(counts, key=lambda key: (-counts[key], -latest[key]))
+    return [(display[key], counts[key]) for key in ranked[:limit]]
+
+
+def build_embed(store, members):
     esc = discord.utils.escape_markdown
     embed = discord.Embed(
         title='🏆 SOTW & BOTW Winners', color=discord.Color.gold(),
-        description=f'Updates automatically after each Skill and Boss of the Week ends. '
-                    f'Full results on [TempleOSRS]({GROUP_COMPETITIONS_URL}).')
-    recent, previous = [], {}
+        description=f'Current clan members only. Updates automatically after each Skill and Boss of the Week '
+                    f'ends. Full results on [TempleOSRS]({GROUP_COMPETITIONS_URL}).')
+    results = {category: store.results(category, members) for category in CATEGORIES}
+    recent = []
     for category in CATEGORIES:
-        rows = store.winners(category, 6)
-        previous[category] = rows[1:]
-        if rows:
-            row = rows[0]
+        if results[category]:
+            row = results[category][0]
             recent.append(f"**{category}** · [{esc(row['name'])}]({standings_url(row['id'])}) · ended <t:{row['ended']}:d>\n"
                           f"🥇 {names(row)} with {row['gain']:,} {UNITS[category]}"
                           + (' (tie)' if len(row['winners']) > 1 else ''))
     embed.add_field(name='Recent Winners', value='\n\n'.join(recent) or 'No winners yet.', inline=False)
     for category in CATEGORIES:
         lines = [f"<t:{row['ended']}:d> · [{esc(row['name'])}]({standings_url(row['id'])}) · "
-                 f"{names(row)} ({row['gain']:,} {UNITS[category]})" for row in previous[category]]
+                 f"{names(row)} ({row['gain']:,} {UNITS[category]})" for row in results[category][1:6]]
         embed.add_field(name=f'Previous {category} Winners', value='\n'.join(lines) or 'None yet.', inline=False)
     for category in CATEGORIES:
-        leaders = store.most_wins(category, 10)
+        leaders = most_wins(results[category], 10)
         # Shared ranks for equal win counts: 1, 2, 2, 2, 5...
         lines = [f'{1 + sum(c > count for _, c in leaders)}. **{esc(name)}** · {count} win{"s" if count != 1 else ""}'
                  for name, count in leaders]
         embed.add_field(name=f'Most {category} Wins', value='\n'.join(lines) or 'None yet.', inline=True)
     embed.set_footer(text=MARKER)
     return embed
+
+
+def embed_hash(embed):
+    return hashlib.sha256(json.dumps(embed.to_dict(), sort_keys=True).encode()).hexdigest()
 
 
 class Competitions(commands.Cog):
@@ -102,17 +130,17 @@ class Competitions(commands.Cog):
         if self.session is not None:
             await self.session.close()
 
-    async def fetch_json(self, endpoint, comp_or_group_id):
+    async def fetch_json(self, endpoint, item_id):
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=30),
                 headers={'User-Agent': 'IronsGrottoDiscordBot (Discord clan bot)'})
-        async with self.session.get(f'{TEMPLE_API_URL}/{endpoint}', params={'id': comp_or_group_id}) as response:
+        async with self.session.get(f'{TEMPLE_API_URL}/{endpoint}', params={'id': item_id}) as response:
             response.raise_for_status()
             return await response.json(content_type=None)
 
     async def collect_results(self):
-        """Store every newly finished SOTW/BOTW; returns how many were added."""
+        """Store standings for every newly finished SOTW/BOTW; returns how many were added."""
         data = await self.fetch_json('group_competitions.php', TEMPLE_GROUP_ID)
         comps = data.get('data') or []
         known = self.store.known_ids()
@@ -125,10 +153,10 @@ class Competitions(commands.Cog):
                 details = (await self.fetch_json('competition_info_v2.php', comp['id']))['data']
                 info = details['info']
                 category = 'SOTW' if info.get('skill_competition') else 'BOTW'
-                winners, gain = pick_winner(details.get('participants'))
                 self.store.record(comp['id'], ' '.join(comp['name'].split()), category,
                                   info.get('skill') or comp.get('skill', ''),
-                                  int(info.get('end_date_unix') or comp['end_date_unix']), winners, gain)
+                                  int(info.get('end_date_unix') or comp['end_date_unix']),
+                                  standings(details.get('participants')))
                 added += 1
             except Exception:
                 logger.exception('Could not load TempleOSRS competition %s; will retry', comp.get('id'))
@@ -137,26 +165,34 @@ class Competitions(commands.Cog):
             logger.info('Recorded %s finished SOTW/BOTW competitions', added)
         return added
 
-    async def publish(self, *, force=False):
-        channel_id, message_id = self.store.board()
-        if channel_id is None or (message_id is not None and not force):
-            return
+    async def publish(self, members, *, force=False):
+        """Draw the board; Discord is only touched when its contents changed (or force)."""
+        channel_id, message_id, old_hash = self.store.board()
+        if channel_id is None:
+            return False
+        embed = build_embed(self.store, members)
+        new_hash = embed_hash(embed)
+        if message_id is not None and new_hash == old_hash and not force:
+            return False
         channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-        embed = build_embed(self.store)
         if message_id is not None:
             try:
                 await channel.get_partial_message(message_id).edit(
                     content=None, embed=embed, allowed_mentions=discord.AllowedMentions.none())
-                return
+                self.store.set_board(channel_id, message_id, new_hash)
+                return True
             except discord.NotFound:
                 logger.warning('Winners board message was deleted; posting a new one')
         message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-        self.store.set_board(channel_id, message.id)
+        self.store.set_board(channel_id, message.id, new_hash)
+        return True
 
     async def sync(self, *, force=False):
         async with self.lock:
+            # Membership first: never draw the board from a missing or broken member list.
+            members = member_keys(await self.fetch_json('groupmembers.php', TEMPLE_GROUP_ID))
             added = await self.collect_results()
-            await self.publish(force=force or bool(added))
+            await self.publish(members, force=force)
             return added
 
     @tasks.loop(minutes=COMPETITION_CHECK_MINUTES)
@@ -182,7 +218,7 @@ class Competitions(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         async with self.lock:
-            old_channel, old_message = self.store.board()
+            old_channel, old_message, _ = self.store.board()
             self.store.set_board(interaction.channel_id, None)
         try:
             await self.sync(force=True)
