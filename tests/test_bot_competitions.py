@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
-from cogs.competitions import Competitions, build_embed, is_weekly, member_keys, standings
+from cogs.competitions import (Competitions, board_embeds, build_embed, build_events_embed, is_weekly,
+                               member_keys, parse_winners, standings)
+from cogs.events import parse_date
 from config import STAFF_ROLE_ID
 from storage import CompetitionStore
 
@@ -76,7 +78,19 @@ class CompetitionTests(unittest.IsolatedAsyncioTestCase):
 
     def board_fields(self):
         call = self.edit().call_args or self.channel.send.call_args
-        return {f.name: f.value for f in call.kwargs['embed'].fields}
+        return {f.name: f.value for f in call.kwargs['embeds'][0].fields}
+
+    def board_embeds_sent(self):
+        call = self.edit().call_args or self.channel.send.call_args
+        return call.kwargs['embeds']
+
+    def staff(self, **extra):
+        return SimpleNamespace(guild_id=1, channel_id=55, user=SimpleNamespace(id=7, roles=[SimpleNamespace(id=STAFF_ROLE_ID)]),
+                               response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+                               followup=SimpleNamespace(send=AsyncMock()), **extra)
+
+    def bingo(self, count):
+        return [f'Player {i}' for i in range(count)]
 
     def test_weekly_name_matching(self):
         for name in ['Vorkath BOTW', 'Sotw Prayer', 'SOTW - Smithing', 'Hydra BotW', 'Theatre of Blood Hard Mode BOT']:
@@ -218,6 +232,88 @@ class CompetitionTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.setup.callback(self.cog, interaction)
         self.assertEqual(self.cog.store.board()[:2], (55, 900))
         self.assertFalse(self.channel.send.call_args.kwargs['allowed_mentions'].everyone)
+
+
+    def test_parse_winners(self):
+        self.assertEqual(parse_winners(' Iron Zeusa, bon fe ,\nBon Fe;;Tyluh,  , GIM   Waffle '),
+                         ['Iron Zeusa', 'bon fe', 'Tyluh', 'GIM Waffle'])
+        self.assertEqual(parse_winners(' , ;'), [])
+
+    def test_events_embed_shows_five_most_recent_and_big_bingo_teams(self):
+        store = self.cog.store
+        for i in range(7):
+            store.add_event(f'Event {i}', 1000 + i, [f'Winner {i}'])
+        store.add_event('Winter Bingo', 5000, self.bingo(15), 'Team Lava')
+        embed = build_events_embed(store.events(5), 6000)
+        self.assertEqual([f.name for f in embed.fields], ['Winter Bingo', 'Event 6', 'Event 5', 'Event 4', 'Event 3'])
+        bingo = embed.fields[0].value
+        self.assertTrue(bingo.startswith('<t:5000:D> · Team Lava\n🏆 '))
+        self.assertEqual(bingo.count('**Player '), 15)  # everyone listed
+        self.assertNotIn('more', bingo)
+        self.assertIn('🥇 **Winner 6**', embed.fields[1].value)
+        self.assertIsNone(build_events_embed([], 6000))
+
+    def test_events_embed_shortens_lists_only_when_message_would_be_too_long(self):
+        store = self.cog.store
+        for i in range(5):
+            store.add_event(f'Huge Bingo {i}', 1000 + i, [f'Long Player Name {j:02d}' for j in range(50)])
+        embed = build_events_embed(store.events(5), 3000)
+        self.assertLessEqual(len(embed), 3000)
+        self.assertTrue(all(len(f.value) <= 1024 for f in embed.fields))
+        self.assertRegex(embed.fields[0].value, r'\+\d+ more$')
+        # Combined with a full SOTW/BOTW board the message stays under Discord's 6000-character cap.
+        for i in range(10):
+            store.record(300 + i, f'Long Competition Name Number {i} SOTW', 'SOTW', 'x', 100 + i,
+                         [(f'Member {i}', 1_000_000 + i)])
+        embeds = board_embeds(store, keys())
+        self.assertEqual(len(embeds), 2)
+        self.assertLessEqual(sum(len(e) for e in embeds), 6000)
+
+    async def test_event_add_redraws_board_without_waiting_for_temple(self):
+        self.cog.store.set_board(55, None)
+        await self.cog.sync()  # posts the board and remembers the member list
+        self.calls.clear()
+        interaction = self.staff()
+        await self.cog.event_add.callback(self.cog, interaction, 'Winter  Bingo', ', '.join(self.bingo(15)),
+                                          '2026-11-15', 'Team Lava')
+        self.assertEqual(self.calls, [])  # no TempleOSRS requests needed
+        embeds = self.board_embeds_sent()
+        self.assertEqual(len(embeds), 2)
+        self.assertEqual(embeds[1].fields[0].name, 'Winter Bingo')
+        self.assertEqual(self.cog.store.events(5)[0]['ended'], parse_date('2026-11-15') + 12 * 3600)
+        self.assertIn('15 winners', interaction.followup.send.call_args.args[0])
+
+    async def test_event_add_validation_and_defaults(self):
+        for winners, date in [(' , ', None), (', '.join(self.bingo(51)), None), ('x' * 51, None),
+                              ('Tyluh', '15/11/2026')]:
+            interaction = self.staff()
+            await self.cog.event_add.callback(self.cog, interaction, 'Bingo', winners, date)
+            interaction.response.send_message.assert_awaited_once()
+        self.assertEqual(self.cog.store.events(5), [])
+        with patch('cogs.competitions.datetime') as clock:
+            clock.now.return_value.date.return_value.isoformat.return_value = '2026-11-20'
+            await self.cog.event_add.callback(self.cog, self.staff(), 'Weekend Event', 'Tyluh')
+        self.assertEqual(self.cog.store.events(5)[0]['ended'], parse_date('2026-11-20') + 12 * 3600)
+
+    async def test_event_commands_staff_only(self):
+        interaction = self.staff()
+        interaction.user.roles = []
+        await self.cog.event_add.callback(self.cog, interaction, 'Bingo', 'Tyluh')
+        await self.cog.event_remove.callback(self.cog, interaction, 1)
+        self.assertEqual(self.cog.store.events(5), [])
+        interaction.response.send_message.assert_awaited()
+
+    async def test_event_remove_and_list(self):
+        self.cog.store.set_board(55, None)
+        await self.cog.sync()
+        first = self.cog.store.add_event('Bingo', 1000, ['Tyluh'])
+        await self.cog.event_list.callback(self.cog, self.staff())
+        await self.cog.event_remove.callback(self.cog, self.staff(), first)
+        self.assertEqual(self.cog.store.events(5), [])
+        self.assertEqual(len(self.board_embeds_sent()), 1)  # events section disappears when empty
+        missing = self.staff()
+        await self.cog.event_remove.callback(self.cog, missing, 999)
+        self.assertIn('not found', missing.followup.send.call_args.args[0])
 
 
 if __name__ == '__main__':
