@@ -89,6 +89,24 @@ in the data folder; the first run imports the full history (about a minute).
 If the board message is deleted, the next update posts a new one. The bot needs
 View Channel, Send Messages, and Embed Links in the board channel.
 
+#### Event Winners
+
+A second embed, directly under the SOTW/BOTW one in the same message, lists the
+five most recent manually added events (bingos, monthly weekend events, anything
+else) with their date, an optional note, and every winner. Staff can use:
+
+- `/winners event-add event:... winners:Name One, Name Two date:2026-11-15 note:Team Lava`
+  Winners are separated by commas or new lines (up to 50). `date` is the day the
+  event ended in Eastern time and defaults to today; `note` is optional.
+- `/winners event-list` to find event IDs (newest 25).
+- `/winners event-remove event_id:...`
+
+The board updates immediately. Names are shown as typed and are not checked
+against the Temple member list. Large teams are listed in full; only if the
+whole message would exceed Discord's 6000-character limit are the longest
+lists shortened to "+N more". The section is hidden until an event is added.
+Events are stored in `competitions.sqlite3`.
+
 ### Forum Bump Reminders
 
 The bot reminds Staff in channel `697877519730213010` to manually bump the

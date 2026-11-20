@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from collections import Counter
+from datetime import datetime
 
 import aiohttp
 import discord
@@ -13,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from config import COMPETITION_CHECK_MINUTES, STAFF_ROLE_ID, TEMPLE_API_URL, TEMPLE_GROUP_ID
+from cogs.events import EASTERN, parse_date
 from storage import CompetitionStore
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,10 @@ MIN_MEMBERS = 20
 GROUP_COMPETITIONS_URL = f'https://templeosrs.com/groups/competitions.php?id={TEMPLE_GROUP_ID}'
 CATEGORIES = ('SOTW', 'BOTW')
 UNITS = {'SOTW': 'XP', 'BOTW': 'KC'}
+RECENT_EVENTS = 5
+MAX_EVENT_WINNERS = 50
+# Discord allows 6000 characters across all embeds in one message.
+MESSAGE_EMBED_LIMIT = 6000
 
 
 def standings_url(comp_id):
@@ -109,8 +115,55 @@ def build_embed(store, members):
     return embed
 
 
-def embed_hash(embed):
-    return hashlib.sha256(json.dumps(embed.to_dict(), sort_keys=True).encode()).hexdigest()
+def parse_winners(text):
+    """Split on commas, semicolons or new lines; drop blanks and repeats (any case), keep order."""
+    seen, winners = set(), []
+    for part in re.split(r'[,;\n]+', text):
+        name = ' '.join(part.split())
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            winners.append(name)
+    return winners
+
+
+def event_value(event, shown):
+    """Date and note on one line, then winners; any beyond `shown` become '+N more'."""
+    esc = discord.utils.escape_markdown
+    header = f"<t:{event['ended']}:D>" + (f" · {esc(event['note'])}" if event['note'] else '')
+    winners = event['winners']
+    listed = ', '.join(f'**{esc(name)}**' for name in winners[:shown])
+    extra = len(winners) - shown
+    if extra > 0:
+        listed += f' +{extra} more'
+    medal = '🥇 ' if len(winners) == 1 else '🏆 '
+    return f'{header}\n{medal}{listed}'
+
+
+def build_events_embed(events, budget):
+    """The most recent manual events; winner lists are shortened only if needed to fit `budget` characters."""
+    if not events:
+        return None
+    longest = max(len(event['winners']) for event in events)
+    for shown in range(longest, 0, -1):
+        embed = discord.Embed(title='🎉 Event Winners', color=discord.Color.purple(),
+                              description='Bingos, weekend events and more. The five most recent.')
+        values = [event_value(event, shown) for event in events]
+        if all(len(value) <= 1024 for value in values):
+            for event, value in zip(events, values):
+                embed.add_field(name=discord.utils.escape_markdown(event['name'])[:256], value=value, inline=False)
+            if len(embed) <= budget:
+                return embed
+    return embed
+
+
+def board_embeds(store, members):
+    first = build_embed(store, members)
+    second = build_events_embed(store.events(RECENT_EVENTS), MESSAGE_EMBED_LIMIT - len(first))
+    return [first] + ([second] if second else [])
+
+
+def embed_hash(embeds):
+    return hashlib.sha256(json.dumps([e.to_dict() for e in embeds], sort_keys=True).encode()).hexdigest()
 
 
 class Competitions(commands.Cog):
@@ -121,6 +174,7 @@ class Competitions(commands.Cog):
         self.store = CompetitionStore()
         self.lock = asyncio.Lock()
         self.session = None
+        self.members = None  # last good Temple member list
 
     async def cog_load(self):
         self.sync_loop.start()
@@ -170,20 +224,20 @@ class Competitions(commands.Cog):
         channel_id, message_id, old_hash = self.store.board()
         if channel_id is None:
             return False
-        embed = build_embed(self.store, members)
-        new_hash = embed_hash(embed)
+        embeds = board_embeds(self.store, members)
+        new_hash = embed_hash(embeds)
         if message_id is not None and new_hash == old_hash and not force:
             return False
         channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
         if message_id is not None:
             try:
                 await channel.get_partial_message(message_id).edit(
-                    content=None, embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                    content=None, embeds=embeds, allowed_mentions=discord.AllowedMentions.none())
                 self.store.set_board(channel_id, message_id, new_hash)
                 return True
             except discord.NotFound:
                 logger.warning('Winners board message was deleted; posting a new one')
-        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        message = await channel.send(embeds=embeds, allowed_mentions=discord.AllowedMentions.none())
         self.store.set_board(channel_id, message.id, new_hash)
         return True
 
@@ -191,6 +245,7 @@ class Competitions(commands.Cog):
         async with self.lock:
             # Membership first: never draw the board from a missing or broken member list.
             members = member_keys(await self.fetch_json('groupmembers.php', TEMPLE_GROUP_ID))
+            self.members = members
             added = await self.collect_results()
             await self.publish(members, force=force)
             return added
@@ -252,3 +307,84 @@ class Competitions(commands.Cog):
                                             ephemeral=True)
             return
         await interaction.followup.send(f'Board refreshed ({added} new results).', ephemeral=True)
+
+    async def redraw(self):
+        """Show an event change right away; uses the last member list instead of waiting on Temple."""
+        if self.members is None:
+            await self.sync()
+            return
+        async with self.lock:
+            await self.publish(self.members)
+
+    @winners_group.command(name='event-add', description='Add winners of a bingo, weekend event or other event')
+    @app_commands.describe(event='Event name, e.g. "Winter Bingo 2026"',
+                           winners='Winner names separated by commas (or new lines)',
+                           date='Day the event ended, YYYY-MM-DD (Eastern); defaults to today',
+                           note='Optional extra line, e.g. team name or prize')
+    async def event_add(self, interaction: discord.Interaction, event: app_commands.Range[str, 1, 100],
+                        winners: app_commands.Range[str, 1, 2000], date: str = None,
+                        note: app_commands.Range[str, 1, 150] = None):
+        if not await self.authorized(interaction):
+            return
+        names = parse_winners(winners)
+        try:
+            if not event.strip():
+                raise ValueError('Give the event a name.')
+            if not names:
+                raise ValueError('List at least one winner, separated by commas.')
+            if len(names) > MAX_EVENT_WINNERS:
+                raise ValueError(f'That is {len(names)} winners; the limit is {MAX_EVENT_WINNERS}.')
+            if any(len(name) > 50 for name in names):
+                raise ValueError('Each winner name must be 50 characters or less. Separate names with commas.')
+            # Noon Eastern so the date shows as the same day for viewers in any US time zone.
+            day = parse_date(date) if date else parse_date(datetime.now(EASTERN).date().isoformat())
+            ended = day + 12 * 60 * 60
+        except ValueError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        note = ' '.join(note.split()) if note else None
+        event_id = self.store.add_event(' '.join(event.split()), ended, names, note or None, interaction.user.id)
+        message = f'Added event #{event_id}: {" ".join(event.split())} with {len(names)} winner{"s" if len(names) != 1 else ""}.'
+        try:
+            await self.redraw()
+        except Exception:
+            logger.exception('Winners board redraw after event add failed')
+            message += ' The board could not be updated right now; it will catch up within 30 minutes.'
+        if self.store.board()[0] is None:
+            message += ' No board yet: use `/winners setup` in the channel it should live in.'
+        elif event_id not in {e['id'] for e in self.store.events(RECENT_EVENTS)}:
+            message += ' It is older than the five most recent events, so it is saved but not shown.'
+        await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @winners_group.command(name='event-list', description='List saved event winners with their IDs')
+    async def event_list(self, interaction: discord.Interaction):
+        if not await self.authorized(interaction):
+            return
+        events = self.store.events(25)
+        if not events:
+            await interaction.response.send_message('No events saved yet. Add one with `/winners event-add`.',
+                                                    ephemeral=True)
+            return
+        lines = [f"#{e['id']} · <t:{e['ended']}:d> · {discord.utils.escape_markdown(e['name'])} "
+                 f"({len(e['winners'])} winner{'s' if len(e['winners']) != 1 else ''})" for e in events]
+        embed = discord.Embed(title='Saved events (newest 25)', description='\n'.join(lines),
+                              color=discord.Color.purple())
+        embed.set_footer(text=f'The board shows the newest {RECENT_EVENTS}. Remove with /winners event-remove.')
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @winners_group.command(name='event-remove', description='Remove an event using its ID from /winners event-list')
+    async def event_remove(self, interaction: discord.Interaction, event_id: int):
+        if not await self.authorized(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        if not self.store.remove_event(event_id):
+            await interaction.followup.send('Event not found. Check `/winners event-list` for IDs.', ephemeral=True)
+            return
+        message = f'Removed event #{event_id}.'
+        try:
+            await self.redraw()
+        except Exception:
+            logger.exception('Winners board redraw after event remove failed')
+            message += ' The board will update within 30 minutes.'
+        await interaction.followup.send(message, ephemeral=True)

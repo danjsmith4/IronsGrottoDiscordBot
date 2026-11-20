@@ -102,6 +102,7 @@ class CompetitionStore:
             if 'content_hash' not in {row[1] for row in conn.execute('PRAGMA table_info(board)')}:
                 conn.execute('ALTER TABLE board ADD COLUMN content_hash TEXT')
             conn.execute('INSERT OR IGNORE INTO board (id) VALUES (1)')
+            conn.execute('CREATE TABLE IF NOT EXISTS event_winners (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, ended INTEGER NOT NULL, winners TEXT NOT NULL, note TEXT, added_by INTEGER)')
 
     @staticmethod
     def name_key(name):
@@ -155,6 +156,25 @@ class CompetitionStore:
         with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('UPDATE board SET channel_id=?, message_id=?, content_hash=? WHERE id=1',
                          (channel_id, message_id, content_hash))
+
+    def add_event(self, name, ended, winners, note=None, added_by=None):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            return conn.execute('INSERT INTO event_winners (name, ended, winners, note, added_by) VALUES (?,?,?,?,?)',
+                                (name, ended, json.dumps(winners), note, added_by)).lastrowid
+
+    def events(self, limit):
+        """Most recent first (by event date, then newest added)."""
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = [dict(row) for row in conn.execute(
+                'SELECT * FROM event_winners ORDER BY ended DESC, id DESC LIMIT ?', (limit,))]
+        for row in rows:
+            row['winners'] = json.loads(row['winners'])
+        return rows
+
+    def remove_event(self, event_id):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            return conn.execute('DELETE FROM event_winners WHERE id=?', (event_id,)).rowcount
 
 
 def db():
