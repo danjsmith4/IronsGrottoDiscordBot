@@ -11,6 +11,7 @@ Python 3.12 Discord bot, hosted in Docker on Unraid.
 | `cogs/community.py` | Welcomes, applications, community information |
 | `cogs/moderation.py` | Event bans, submission review, message cleanup |
 | `cogs/events.py` | Staff-managed events and eight-hour announcement rotation |
+| `cogs/competitions.py` | TempleOSRS SOTW/BOTW winners board |
 | `cogs/leaderboards.py` | Leaderboard commands, forms, Discord messages |
 | `storage.py` | SQLite queries, ranking, input validation, atomic JSON writes |
 
@@ -55,6 +56,30 @@ The first eligible event is announced within a minute when no previous timer exi
 Events and the timer persist in `events.sqlite3` in the backed-up data folder.
 The bot needs View Channel, Read Message History, Send Messages, and Embed Links.
 If history cannot be read, it skips posting and logs the failure to avoid spam.
+
+### SOTW/BOTW Winners Board
+
+A single embed listing TempleOSRS group `241` Skill and Boss of the Week results:
+**Recent Winners** (latest SOTW and BOTW, with XP or kill count), the **five
+previous winners** of each, and the top ten **most wins** in each.
+
+Staff role `829386451624001539` can use:
+
+- `/winners setup` in the channel the board should live in. It posts the board
+  there (moving it if one already exists elsewhere).
+- `/winners refresh` to check TempleOSRS immediately and redraw the board.
+
+The bot checks TempleOSRS every 30 minutes. A competition counts once it is
+finished, is not a team competition, and its name contains SOTW or BOTW (any
+case, e.g. `Sotw Prayer`, `Hydra BotW`). It is recorded two hours after its end
+time, so late player updates are included; the board is then edited in place.
+Whether a result counts as SOTW (XP) or BOTW (KC) comes from what Temple
+tracked, not the name, so `RC BOTW` is a SOTW and `ToB SOTW Grotto` a BOTW.
+Ties credit every tied player with a win. Wins are grouped by RSN, so a name
+change starts a new count. Finished results are stored in `competitions.sqlite3`
+in the data folder; the first run imports the full history (about a minute).
+If the board message is deleted, the next update posts a new one. The bot needs
+View Channel, Send Messages, and Embed Links in the board channel.
 
 ### Forum Bump Reminders
 
