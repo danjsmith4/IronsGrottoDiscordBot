@@ -80,6 +80,65 @@ class BumpStore:
         with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('UPDATE reminder SET paused=? WHERE id=1', (int(paused),))
 
+
+class CompetitionStore:
+    """Finished TempleOSRS SOTW/BOTW results and the winners board message."""
+
+    def __init__(self, path='competitions.sqlite3'):
+        self.path = path
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS competitions (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, metric TEXT NOT NULL, ended INTEGER NOT NULL, gain INTEGER)')
+            conn.execute('CREATE TABLE IF NOT EXISTS competition_winners (competition_id INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL, PRIMARY KEY (competition_id, position))')
+            conn.execute('CREATE TABLE IF NOT EXISTS board (id INTEGER PRIMARY KEY, channel_id INTEGER, message_id INTEGER)')
+            conn.execute('INSERT OR IGNORE INTO board VALUES (1, NULL, NULL)')
+
+    def known_ids(self):
+        with closing(sqlite3.connect(self.path)) as conn:
+            return {row[0] for row in conn.execute('SELECT id FROM competitions')}
+
+    def record(self, comp_id, name, category, metric, ended, winners, gain):
+        """Winners may be empty when nobody gained; the competition is still stored so it is not refetched.
+        Several winners means a tie, and each of them is credited with a win."""
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('INSERT OR REPLACE INTO competitions VALUES (?,?,?,?,?,?)',
+                         (comp_id, name, category, metric, ended, gain if winners else None))
+            conn.execute('DELETE FROM competition_winners WHERE competition_id=?', (comp_id,))
+            conn.executemany('INSERT INTO competition_winners VALUES (?,?,?,?)',
+                             [(comp_id, i, winner, winner.lower()) for i, winner in enumerate(winners)])
+
+    def winners(self, category, limit):
+        """Most recent competitions that had a winner; each row has a 'winners' list."""
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = [dict(row) for row in conn.execute(
+                'SELECT * FROM competitions WHERE category=? AND gain IS NOT NULL ORDER BY ended DESC, id DESC LIMIT ?',
+                (category, limit))]
+            for row in rows:
+                row['winners'] = [r[0] for r in conn.execute(
+                    'SELECT name FROM competition_winners WHERE competition_id=? ORDER BY position', (row['id'],))]
+            return rows
+
+    def most_wins(self, category, limit):
+        """(display name from the most recent win, win count), most wins first; ties go to the most recent winner."""
+        with closing(sqlite3.connect(self.path)) as conn:
+            rows = conn.execute(
+                'SELECT w.name_key, COUNT(*), MAX(c.ended) FROM competition_winners w JOIN competitions c ON c.id=w.competition_id '
+                'WHERE c.category=? GROUP BY w.name_key ORDER BY COUNT(*) DESC, MAX(c.ended) DESC LIMIT ?',
+                (category, limit)).fetchall()
+            return [(conn.execute(
+                'SELECT w.name FROM competition_winners w JOIN competitions c ON c.id=w.competition_id '
+                'WHERE c.category=? AND w.name_key=? ORDER BY c.ended DESC LIMIT 1', (category, key)).fetchone()[0], count)
+                for key, count, _ in rows]
+
+    def board(self):
+        with closing(sqlite3.connect(self.path)) as conn:
+            return conn.execute('SELECT channel_id, message_id FROM board WHERE id=1').fetchone()
+
+    def set_board(self, channel_id, message_id):
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute('UPDATE board SET channel_id=?, message_id=? WHERE id=1', (channel_id, message_id))
+
+
 def db():
     return sqlite3.connect(EVENTBAN_DB_PATH)
 
